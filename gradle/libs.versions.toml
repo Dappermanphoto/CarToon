@@ -14,6 +14,7 @@ appAutomotive = "1.7.0"
 app = "1.4.0"
 media3 = "1.8.0"
 documentfile = "1.1.0"
+youtubePlayer = "13.0.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -37,6 +38,7 @@ androidx-app = { group = "androidx.car.app", name = "app", version.ref = "app" }
 androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
 androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
+youtube-player-core = { group = "com.pierfrancescosoffritti.androidyoutubeplayer", name = "core", version.ref = "youtubePlayer" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

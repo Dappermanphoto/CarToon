@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- YouTube search and playback -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Voice search -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Optional controller support. Never set required="true". -->
     <uses-feature
         android:name="android.hardware.gamepad"
@@ -11,6 +16,10 @@
     <queries>
         <intent>
             <action android:name="android.media.browse.MediaBrowserService" />
+        </intent>
+        <!-- Lets voice search find the phone's speech recognizer. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
     </queries>
 

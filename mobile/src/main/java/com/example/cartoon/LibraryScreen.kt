@@ -99,7 +99,7 @@ fun LibraryScreen(
             ) { BigButton("Choose another folder", onPickFolder) }
 
             else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = if (ui.car) 300.dp else 260.dp),
+                columns = GridCells.Adaptive(minSize = if (ui.short) 220.dp else 260.dp),
                 contentPadding = PaddingValues(bottom = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -130,7 +130,7 @@ private fun MediaCard(entry: MediaEntry, onClick: () -> Unit) {
         ArtTile(
             art = null,
             fallback = if (isVideo) AppIcons.Movie else AppIcons.Note,
-            size = if (ui.car) 76.dp else 62.dp,
+            size = if (ui.short) 50.dp else 62.dp,
             accent = if (isVideo) cs.primary else cs.secondary,
         )
         Spacer(Modifier.width(14.dp))
@@ -153,7 +153,7 @@ private fun MediaCard(entry: MediaEntry, onClick: () -> Unit) {
         }
         Box(
             Modifier
-                .size(if (ui.car) 52.dp else 40.dp)
+                .size(if (ui.short) 36.dp else 40.dp)
                 .clip(RoundedCornerShape(50))
                 .background(cs.surfaceVariant),
             contentAlignment = Alignment.Center,
@@ -162,7 +162,7 @@ private fun MediaCard(entry: MediaEntry, onClick: () -> Unit) {
                 AppIcons.Play,
                 contentDescription = "Play",
                 tint = cs.onSurface,
-                modifier = Modifier.size(if (ui.car) 26.dp else 20.dp),
+                modifier = Modifier.size(if (ui.short) 18.dp else 20.dp),
             )
         }
     }

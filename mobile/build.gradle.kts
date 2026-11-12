@@ -17,6 +17,11 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Spotify sign-in sends the user back to the app at cartoon://callback
+        manifestPlaceholders["redirectSchemeName"] = "cartoon"
+        manifestPlaceholders["redirectHostName"] = "callback"
+        manifestPlaceholders["redirectPathPattern"] = ".*"
     }
 
     buildTypes {
@@ -42,6 +47,12 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.documentfile)
+    implementation(libs.youtube.player.core)
+    // Spotify App Remote SDK (from github.com/spotify/android-sdk) + the JSON library it needs
+    implementation(files("libs/spotify-app-remote-release-0.8.0.aar"))
+    implementation("com.google.code.gson:gson:2.11.0")
+    // Spotify sign-in ("Sign in with Spotify")
+    implementation("com.spotify.android:auth:2.1.0")
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

@@ -1,5 +1,8 @@
 @echo off
 title CarToon - Android Auto car screen
+set "HERE=%~dp0"
+set "CFG=%~1"
+if "%CFG%"=="" set "CFG=hd"
 set "SDK=%LOCALAPPDATA%\Android\Sdk"
 set "ADB=%SDK%\platform-tools\adb.exe"
 
@@ -36,5 +39,5 @@ echo   Type  restrict none  then Enter = parked (CarToon can run)
 echo   Type  restrict all   then Enter = driving
 echo.
 cd /d "%SDK%\extras\google\auto"
-desktop-head-unit.exe
+desktop-head-unit.exe -c "%HERE%dhu\cartoon-%CFG%.ini"
 pause

@@ -31,7 +31,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +48,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.layout.ContentScale
@@ -62,40 +62,35 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/* ------------------------------ Theme ------------------------------ */
+/* ------------------------------ Sizing ------------------------------ */
 
-val CarToonColors = darkColorScheme(
-    primary = Color(0xFFFFB547),
-    onPrimary = Color(0xFF2A1700),
-    secondary = Color(0xFF7FD4FF),
-    onSecondary = Color(0xFF00222F),
-    background = Color(0xFF0E0F12),
-    onBackground = Color(0xFFF2F2F5),
-    surface = Color(0xFF17191E),
-    onSurface = Color(0xFFF2F2F5),
-    surfaceVariant = Color(0xFF23262D),
-    onSurfaceVariant = Color(0xFFA9AEB9),
-    outline = Color(0xFF3A3E47),
-)
-
-val AppBackground = Brush.verticalGradient(listOf(Color(0xFF181A21), Color(0xFF0B0C0F)))
-
-/** Sizes that grow on the car screen so everything is easy to hit at arm's length. */
+/**
+ * Sizes adapt to the space available. "short" covers small car screens (800x480, like most
+ * aftermarket head units) and phones held sideways, so nothing gets cut off.
+ */
 @Immutable
-data class UiScale(val car: Boolean, val wide: Boolean) {
-    val pad: Dp get() = if (car) 28.dp else 18.dp
-    val control: Dp get() = if (car) 68.dp else 54.dp
-    val play: Dp get() = if (car) 96.dp else 74.dp
-    val art: Dp get() = if (car) 196.dp else 168.dp
-    val iconButton: Dp get() = if (car) 60.dp else 46.dp
-    val headline: TextUnit get() = if (car) 34.sp else 28.sp
-    val title: TextUnit get() = if (car) 28.sp else 21.sp
-    val body: TextUnit get() = if (car) 20.sp else 15.sp
-    val small: TextUnit get() = if (car) 17.sp else 13.sp
-    val lyric: TextUnit get() = if (car) 34.sp else 25.sp
+data class UiScale(
+    val car: Boolean,
+    val wide: Boolean,
+    val short: Boolean,
+    val lyricScale: Float = 1f,
+) {
+    val pad: Dp get() = if (short) 14.dp else 20.dp
+    val control: Dp get() = if (short) 46.dp else 56.dp
+    val play: Dp get() = if (short) 60.dp else 76.dp
+    val art: Dp get() = if (short) 136.dp else 184.dp
+    val iconButton: Dp get() = if (short) 42.dp else 48.dp
+    val headline: TextUnit get() = if (short) 22.sp else 28.sp
+    val title: TextUnit get() = if (short) 18.sp else 22.sp
+    val body: TextUnit get() = if (short) 14.sp else 16.sp
+    val small: TextUnit get() = if (short) 12.sp else 13.sp
+    val lyric: TextUnit get() = (if (short) 22.sp else 27.sp) * lyricScale
+    val railWidth: Dp get() = if (short) 84.dp else 104.dp
+    val navIcon: Dp get() = if (short) 22.dp else 26.dp
+    val key: Dp get() = if (short) 40.dp else 52.dp
 }
 
-val LocalUi = staticCompositionLocalOf { UiScale(car = false, wide = false) }
+val LocalUi = staticCompositionLocalOf { UiScale(car = false, wide = false, short = false) }
 
 /** True when the app is running on the Android Auto screen instead of the phone. */
 @Composable
@@ -146,6 +141,54 @@ object AppIcons {
                 "1.5,0.51V5h4v2zM4,6H2v14c0,1.1 0.9,2 2,2h14v-2H4V6z"
         )
     }
+
+    val Settings by lazy {
+        icon(
+            "M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58" +
+                "c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29 -0.59,-0.22l-2.39,0.96" +
+                "c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41 -0.48,-0.41h-3.84" +
+                "c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33" +
+                "c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48l2.03,1.58" +
+                "C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14 -0.23,0.41 -0.12,0.61" +
+                "l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7 1.62,0.94l0.36,2.54" +
+                "c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17 0.47,-0.41l0.36,-2.54" +
+                "c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0 0.59,-0.22l1.92,-3.32" +
+                "c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94zM12,15.6c-1.98,0 -3.6,-1.62 -3.6,-3.6" +
+                "s1.62,-3.6 3.6,-3.6s3.6,1.62 3.6,3.6S13.98,15.6 12,15.6z"
+        )
+    }
+    val Video by lazy {
+        icon("M20,4H4C2.9,4 2,4.9 2,6v12c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V6C22,4.9 21.1,4 20,4zM9.5,16.5v-9l7,4.5L9.5,16.5z")
+    }
+    val Search by lazy {
+        icon(
+            "M15.5,14h-0.79l-0.28,-0.27C15.41,12.59 16,11.11 16,9.5 16,5.91 13.09,3 9.5,3S3,5.91 3,9.5 " +
+                "5.91,16 9.5,16c1.61,0 3.09,-0.59 4.23,-1.57l0.27,0.28v0.79l5,4.99L20.49,19l-4.99,-5z" +
+                "M9.5,14C7.01,14 5,11.99 5,9.5S7.01,5 9.5,5 14,7.01 14,9.5 11.99,14 9.5,14z"
+        )
+    }
+    val Mic by lazy {
+        icon(
+            "M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3z" +
+                "M17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11H5c0,3.41 2.72,6.23 6,6.72V21h2v-3.28" +
+                "c3.28,-0.48 6,-3.3 6,-6.72h-1.7z"
+        )
+    }
+    val Backspace by lazy {
+        icon(
+            "M22,3H7c-0.69,0 -1.23,0.35 -1.59,0.88L0,12l5.41,8.11c0.36,0.53 0.9,0.89 1.59,0.89h15" +
+                "c1.1,0 2,-0.9 2,-2V5c0,-1.1 -0.9,-2 -2,-2zM19,15.59L17.59,17 14,13.41 10.41,17 9,15.59 " +
+                "12.59,12 9,8.41 10.41,7 14,10.59 17.59,7 19,8.41 15.41,12 19,15.59z"
+        )
+    }
+    val Keyboard by lazy {
+        icon(
+            "M20,5H4c-1.1,0 -1.99,0.9 -1.99,2L2,17c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2z" +
+                "M11,8h2v2h-2V8zM11,11h2v2h-2v-2zM8,8h2v2H8V8zM8,11h2v2H8v-2zM7,13H5v-2h2v2zM7,10H5V8h2v2z" +
+                "M16,17H8v-2h8v2zM16,13h-2v-2h2v2zM16,10h-2V8h2v2zM19,13h-2v-2h2v2zM19,10h-2V8h2v2z"
+        )
+    }
+    val Check by lazy { icon("M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z") }
 
     private fun icon(path: String): ImageVector =
         ImageVector.Builder(
@@ -203,7 +246,7 @@ fun Pill(
             .clip(RoundedCornerShape(50))
             .background(if (selected) color else color.copy(alpha = 0.14f))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = if (ui.car) 18.dp else 14.dp, vertical = if (ui.car) 10.dp else 7.dp),
+            .padding(horizontal = if (ui.short) 12.dp else 14.dp, vertical = if (ui.short) 6.dp else 7.dp),
     )
 }
 
@@ -226,7 +269,12 @@ fun ArtTile(art: Bitmap?, fallback: ImageVector, size: Dp, accent: Color, modifi
                 .background(Brush.linearGradient(listOf(accent, accent.copy(alpha = 0.45f)))),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(fallback, null, tint = Color(0xFF15161A), modifier = Modifier.size(size * 0.42f))
+            Icon(
+                fallback,
+                null,
+                tint = if (accent.luminance() > 0.45f) Color(0xFF15161A) else Color.White,
+                modifier = Modifier.size(size * 0.42f),
+            )
         }
     }
 }
@@ -242,20 +290,20 @@ fun EmptyState(
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
     Column(
-        modifier.padding(28.dp),
+        modifier.padding(if (ui.short) 12.dp else 28.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
             Modifier
-                .size(if (ui.car) 88.dp else 72.dp)
+                .size(if (ui.short) 56.dp else 72.dp)
                 .clip(CircleShape)
                 .background(cs.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, null, tint = cs.primary, modifier = Modifier.size(if (ui.car) 40.dp else 32.dp))
+            Icon(icon, null, tint = cs.primary, modifier = Modifier.size(if (ui.short) 26.dp else 32.dp))
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(if (ui.short) 10.dp else 18.dp))
         Text(title, fontSize = ui.title, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -267,7 +315,7 @@ fun EmptyState(
             modifier = Modifier.fillMaxWidth(0.85f),
         )
         if (action != null) {
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(if (ui.short) 12.dp else 22.dp))
             action()
         }
     }
@@ -276,7 +324,7 @@ fun EmptyState(
 @Composable
 fun BigButton(text: String, onClick: () -> Unit) {
     val ui = LocalUi.current
-    Button(onClick = onClick, modifier = Modifier.height(if (ui.car) 64.dp else 52.dp)) {
+    Button(onClick = onClick, modifier = Modifier.height(if (ui.short) 46.dp else 52.dp)) {
         Text(text, fontSize = ui.body, fontWeight = FontWeight.SemiBold)
     }
 }
@@ -305,21 +353,26 @@ fun TrackPane(
 ) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
-    Column(modifier, verticalArrangement = Arrangement.Center) {
-        if (compact) {
+    BoxWithConstraints(modifier) {
+    // Everything except the artwork needs roughly this much height.
+    val fixed = if (ui.short) 236.dp else 300.dp
+    val artSize = if (maxHeight == Dp.Infinity) ui.art else (maxHeight - fixed).coerceIn(0.dp, ui.art)
+    val rowLayout = compact || artSize < 92.dp
+    Column(Modifier.fillMaxWidth().align(Alignment.CenterStart)) {
+        if (rowLayout) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ArtTile(art, AppIcons.Note, 76.dp, cs.secondary)
-                Spacer(Modifier.width(16.dp))
+                ArtTile(art, AppIcons.Note, if (ui.short) 60.dp else 76.dp, cs.secondary)
+                Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) { TitleBlock(title, subtitle, source) }
             }
         } else {
-            ArtTile(art, AppIcons.Note, ui.art, cs.secondary)
-            Spacer(Modifier.height(22.dp))
+            ArtTile(art, AppIcons.Note, artSize, cs.secondary)
+            Spacer(Modifier.height(if (ui.short) 12.dp else 20.dp))
             TitleBlock(title, subtitle, source)
         }
-        Spacer(Modifier.height(if (compact) 10.dp else 18.dp))
+        Spacer(Modifier.height(if (rowLayout || ui.short) 6.dp else 14.dp))
         SeekBar(position, duration, canSeek, onSeek)
-        Spacer(Modifier.height(if (compact) 6.dp else 14.dp))
+        Spacer(Modifier.height(if (rowLayout || ui.short) 4.dp else 12.dp))
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -347,6 +400,7 @@ fun TrackPane(
         }
         extra()
     }
+    }
 }
 
 @Composable
@@ -357,7 +411,7 @@ private fun TitleBlock(title: String, subtitle: String, source: String?) {
         title.ifBlank { "Unknown title" },
         fontSize = ui.title,
         fontWeight = FontWeight.Bold,
-        maxLines = 2,
+        maxLines = if (ui.short) 1 else 2,
         overflow = TextOverflow.Ellipsis,
         lineHeight = ui.title * 1.15f,
     )
@@ -366,7 +420,7 @@ private fun TitleBlock(title: String, subtitle: String, source: String?) {
         Text(subtitle, fontSize = ui.body, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     if (source != null) {
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(if (ui.short) 6.dp else 10.dp))
         Pill("Playing in $source", color = cs.secondary)
     }
 }

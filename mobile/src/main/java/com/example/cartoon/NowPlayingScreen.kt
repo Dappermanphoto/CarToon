@@ -58,8 +58,10 @@ fun NowPlayingScreen(
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = ui.pad, vertical = 12.dp)) {
-        Text("Now Playing", fontSize = ui.headline, fontWeight = FontWeight.Black)
-        Spacer(Modifier.height(14.dp))
+        if (!(ui.short && ui.wide)) {
+            Text("Now Playing", fontSize = ui.headline, fontWeight = FontWeight.Black)
+            Spacer(Modifier.height(14.dp))
+        }
 
         if (!hasAccess) {
             EmptyState(

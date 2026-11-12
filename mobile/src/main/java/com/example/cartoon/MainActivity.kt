@@ -5,12 +5,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -26,11 +28,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -58,18 +62,21 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var player: ExoPlayer
     private lateinit var tracker: NowPlayingTracker
+    private lateinit var spotify: SpotifyController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         player = ExoPlayer.Builder(this).build()
         tracker = NowPlayingTracker(this)
-        setContent { CarToonApp(player, tracker) }
+        spotify = SpotifyController(this)
+        setContent { CarToonApp(player, tracker, spotify) }
     }
 
     override fun onStart() {
         super.onStart()
         if (NowPlayingTracker.hasAccess(this)) tracker.start()
+        if (spotify.wantConnected) spotify.connect(this)
     }
 
     // Android Auto hides parked apps when the car starts moving; stop playback with it.
@@ -77,6 +84,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         player.pause()
         tracker.stop()
+        spotify.disconnect()
     }
 
     override fun onDestroy() {
@@ -85,18 +93,28 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) { LIBRARY("Library"), NOW_PLAYING("Now Playing") }
+private enum class Tab(val label: String) {
+    LIBRARY("Library"), NOW_PLAYING("Now Playing"), SPOTIFY("Spotify"), YOUTUBE("YouTube"), SETTINGS("Settings"),
+}
 
 private fun Tab.icon(): ImageVector = when (this) {
     Tab.LIBRARY -> AppIcons.Library
     Tab.NOW_PLAYING -> AppIcons.Lyrics
+    Tab.SPOTIFY -> AppIcons.Note
+    Tab.YOUTUBE -> AppIcons.Video
+    Tab.SETTINGS -> AppIcons.Settings
 }
 
 @Composable
-fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker) {
+fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyController) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     val car = rememberIsCarScreen()
+    val settingsStore = remember { SettingsStore(context) }
+    var settings by remember { mutableStateOf(settingsStore.load()) }
+    val theme = remember(settings) { settings.toTheme() }
+    val youTube = remember { YouTubeState() }
+    var playingVideo by remember { mutableStateOf<YtVideo?>(null) }
 
     var folder by remember { mutableStateOf(prefs.getString(KEY_FOLDER, null)?.let(Uri::parse)) }
     var library by remember { mutableStateOf(Library.EMPTY) }
@@ -104,7 +122,7 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker) {
     var reloadKey by remember { mutableIntStateOf(0) }
     var queue by remember { mutableStateOf<List<MediaEntry>?>(null) }
     // On the car screen, open straight to lyrics for whatever is playing.
-    var tab by remember { mutableStateOf(if (car) Tab.NOW_PLAYING else Tab.LIBRARY) }
+    var tab by remember { mutableStateOf(if (car && settings.carOpensNowPlaying) Tab.NOW_PLAYING else Tab.LIBRARY) }
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -125,16 +143,39 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker) {
         loading = false
     }
 
-    MaterialTheme(colorScheme = CarToonColors) {
+    // Light or dark status bar icons to match the theme
+    SideEffect {
+        val transparent = android.graphics.Color.TRANSPARENT
+        (context as? ComponentActivity)?.enableEdgeToEdge(
+            statusBarStyle = if (theme.isDark) SystemBarStyle.dark(transparent)
+            else SystemBarStyle.light(transparent, transparent),
+            navigationBarStyle = if (theme.isDark) SystemBarStyle.dark(transparent)
+            else SystemBarStyle.light(transparent, transparent),
+        )
+    }
+
+    MaterialTheme(colorScheme = theme.colors) {
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
-                .background(AppBackground)
+                .background(theme.background)
         ) {
-            val ui = UiScale(car = car, wide = car || maxWidth > maxHeight || maxWidth >= 840.dp)
-            CompositionLocalProvider(LocalUi provides ui) {
+            val ui = UiScale(
+                car = car,
+                wide = car || maxWidth > maxHeight || maxWidth >= 840.dp,
+                short = maxHeight < 560.dp,
+                lyricScale = settings.lyricSize.scale,
+            )
+            CompositionLocalProvider(
+                LocalUi provides ui,
+                // Default text/icon color for the theme (otherwise plain text shows up black).
+                LocalContentColor provides theme.colors.onBackground,
+            ) {
                 val q = queue
-                if (q != null) {
+                val video = playingVideo
+                if (video != null) {
+                    YouTubePlayerScreen(video, onBack = { playingVideo = null })
+                } else if (q != null) {
                     PlayerScreen(
                         player = player,
                         queue = q,
@@ -169,6 +210,32 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker) {
                                 hasFolder = folder != null,
                                 onPickFolder = { folderPicker.launch(null) },
                             )
+
+                            Tab.SPOTIFY -> SpotifyScreen(
+                                spotify = spotify,
+                                clientId = settings.spotifyClientId,
+                                onOpenSettings = { tab = Tab.SETTINGS },
+                            )
+
+                            Tab.YOUTUBE -> YouTubeScreen(
+                                state = youTube,
+                                apiKey = settings.youtubeKey,
+                                onOpenSettings = { tab = Tab.SETTINGS },
+                                onPlay = {
+                                    player.pause()
+                                    playingVideo = it
+                                },
+                            )
+
+                            Tab.SETTINGS -> SettingsScreen(
+                                settings = settings,
+                                onChange = {
+                                    settings = it
+                                    settingsStore.save(it)
+                                },
+                                folder = folder,
+                                onPickFolder = { folderPicker.launch(null) },
+                            )
                         }
                     }
                 }
@@ -187,17 +254,20 @@ private fun MainScaffold(tab: Tab, onTab: (Tab) -> Unit, content: @Composable ()
             Column(
                 Modifier
                     .fillMaxHeight()
-                    .width(if (ui.car) 124.dp else 100.dp)
-                    .padding(vertical = 16.dp),
+                    .width(ui.railWidth)
+                    .padding(vertical = if (ui.short) 6.dp else 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = if (ui.short) Arrangement.SpaceEvenly else Arrangement.Top,
             ) {
-                Logo()
-                Spacer(Modifier.height(28.dp))
+                if (!ui.short) {
+                    Logo()
+                    Spacer(Modifier.height(24.dp))
+                }
                 Tab.entries.forEach { t ->
-                    NavItem(t, t == tab, { onTab(t) }, Modifier.padding(vertical = 6.dp))
+                    NavItem(t, t == tab, { onTab(t) }, Modifier.padding(vertical = if (ui.short) 0.dp else 4.dp))
                 }
             }
-            Box(Modifier.weight(1f).fillMaxHeight().padding(top = 12.dp)) { content() }
+            Box(Modifier.weight(1f).fillMaxHeight().padding(top = if (ui.short) 4.dp else 12.dp)) { content() }
         }
     } else {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -226,23 +296,23 @@ private fun NavItem(tab: Tab, selected: Boolean, onClick: () -> Unit, modifier: 
         modifier
             .clip(RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp, horizontal = 6.dp),
+            .padding(vertical = if (ui.short) 4.dp else 8.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
             Modifier
                 .clip(RoundedCornerShape(50))
                 .background(if (selected) cs.primary.copy(alpha = 0.18f) else Color.Transparent)
-                .padding(horizontal = 20.dp, vertical = 6.dp),
+                .padding(horizontal = if (ui.short) 16.dp else 20.dp, vertical = if (ui.short) 4.dp else 6.dp),
         ) {
             Icon(
                 tab.icon(),
                 contentDescription = tab.label,
                 tint = if (selected) cs.primary else cs.onSurfaceVariant,
-                modifier = Modifier.size(if (ui.car) 32.dp else 26.dp),
+                modifier = Modifier.size(ui.navIcon),
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(if (ui.short) 2.dp else 4.dp))
         Text(
             tab.label,
             fontSize = ui.small,
@@ -259,11 +329,11 @@ private fun Logo() {
     val cs = MaterialTheme.colorScheme
     Box(
         Modifier
-            .size(if (ui.car) 60.dp else 50.dp)
+            .size(50.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(Brush.linearGradient(listOf(cs.primary, Color(0xFFFF7A59)))),
         contentAlignment = Alignment.Center,
     ) {
-        Text("CT", fontSize = if (ui.car) 24.sp else 20.sp, fontWeight = FontWeight.Black, color = cs.onPrimary)
+        Text("CT", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFF1A1206))
     }
 }
