@@ -23,15 +23,22 @@ works while the car is parked; Android Auto closes it when you start driving.
 
 ---
 
-## Screenshots
+## What it looks like on Android Auto
 
-Shown on the car screen (Android Auto Desktop Head Unit).
+CarToon runs on your car's Android Auto screen. These screenshots were taken on the Android Auto
+Desktop Head Unit (a car-screen emulator).
 
-| OBD cluster (demo car) | Trouble codes |
-|---|---|
-| ![OBD cluster gauges](docs/screenshots/obd-cluster.png) | ![Trouble code list](docs/screenshots/obd-codes.png) |
+**OBD gauges (demo car)**
 
-![Spotify player with the Up next queue](docs/screenshots/spotify.png)
+![OBD cluster gauges on Android Auto](docs/screenshots/obd-cluster.png)
+
+**Trouble codes with names from obd-codes.com and a Look up button**
+
+![Trouble code list on Android Auto](docs/screenshots/obd-codes.png)
+
+**Spotify player with a wavy seek bar and the Up next queue**
+
+![Spotify player with the Up next queue on Android Auto](docs/screenshots/spotify.png)
 
 ---
 
@@ -44,7 +51,7 @@ Shown on the car screen (Android Auto Desktop Head Unit).
 | **YouTube** | Search YouTube with an on-screen keyboard or voice, plus trending videos. |
 | **OBD** | Live gauges from a Bluetooth LE OBD-II adapter: digital cluster, graph, list and a voltage view. Trouble-code hub with plain-English descriptions and a web lookup. A built-in **demo car** works without an adapter. |
 | **Profile** | Your name, a photo of your vehicle and its year, make, model, sub-model and engine. |
-| **Settings** | Themes, custom wallpapers, gauge colors, low-voltage warning, polling speed, driving lock, and the keys for YouTube and Spotify. |
+| **Settings** | A **Feedback** button, in-app **updates**, themes, custom wallpapers, gauge colors, low-voltage warning, polling speed, driving lock, and the keys for YouTube and Spotify. |
 
 Other touches: Material You colors from your wallpaper, Night / Day / Custom themes, custom
 wallpaper (separate portrait and landscape photos with brightness, vignette and tint),
@@ -84,7 +91,17 @@ Android Auto updates sometimes switch **Unknown sources** off again. If CarToon 
 repeat step 3.
 
 ### Updating
-Download the newer APK from Releases and install it over the old one. Your settings are kept.
+**In the app (easiest):** open CarToon's **Settings** on your phone. The **App updates** card checks
+GitHub for a newer release. Tap **Download and install**, then confirm when Android asks. The first
+time, Android sends you to a screen where you allow CarToon to install apps. Turn that on, come
+back and tap **Install now**.
+
+Android always asks you to confirm an install, so an update can't be completely silent.
+
+If the update says it was signed with a different key, you have an older test build. Uninstall
+CarToon once, then install the APK from the Releases page. Updates inside the app work from then on.
+
+**By hand:** download the newer APK from Releases and install it over the old one. Your settings are kept.
 
 ---
 
@@ -171,6 +188,12 @@ photo (used on the car screen). If you choose only one, it's used for both. Adju
 vignette and a color tint with the sliders. Choose photos on the phone; you can fine-tune the
 sliders from the car screen.
 
+### Feedback
+Tap **Feedback? Click Me!** at the top of **Settings**. It opens a GitHub issue page with your app
+version and phone model filled in (no personal data). Describe a bug, something you'd like added or
+something that should go. A free GitHub account is needed. You can also open an issue from the
+repository's **Issues** tab.
+
 ### Driving lock
 **Settings → Driving lock.** When your OBD adapter (or the demo car) reports that the car is
 moving, the YouTube tab and video playback are replaced by a "Parked only" screen until you've
@@ -216,6 +239,6 @@ Your own keys never go into the code. They are typed into the app's Settings.
   read and cached on your phone. Please visit the site for the full articles.
 - Your YouTube key, Spotify Client ID, profile, wallpapers and settings are stored only on your phone.
   CarToon has no server and sends no analytics. The network requests it makes are to YouTube,
-  Spotify, obd-codes.com and the photos Spotify provides.
+  Spotify, obd-codes.com, the photos Spotify provides, and GitHub (to check for updates).
 - OBD tools can read and clear codes on your car. Use them at your own risk, and never operate the
   app while driving.

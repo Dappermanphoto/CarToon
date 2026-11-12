@@ -78,6 +78,10 @@ fun SettingsScreen(
         Text("Settings", fontSize = ui.headline, fontWeight = FontWeight.Black)
         Spacer(Modifier.height(16.dp))
 
+        FeedbackButton()
+        Spacer(Modifier.height(18.dp))
+        UpdateSection()
+
         Section("Look") {
             Label("Theme")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -358,7 +362,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "CarToon V1.6    Made by @SlowCD7",
+                "CarToon V1.7    Made by @SlowCD7",
                 fontSize = ui.small,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.clickable(
