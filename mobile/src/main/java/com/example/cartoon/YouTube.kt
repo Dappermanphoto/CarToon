@@ -95,6 +95,7 @@ class YouTubeState {
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var searched by mutableStateOf(false)
+    var trending by mutableStateOf<List<YtVideo>>(emptyList())
 }
 
 /** YouTube Data API v3. Each search uses 100 of the free 10,000 daily quota units (~100 searches/day). */
@@ -123,6 +124,37 @@ object YouTubeApi {
                 (0 until items.length()).mapNotNull { i ->
                     val item = items.getJSONObject(i)
                     val id = item.optJSONObject("id")?.optString("videoId").orEmpty()
+                    if (id.isEmpty()) return@mapNotNull null
+                    val sn = item.optJSONObject("snippet") ?: return@mapNotNull null
+                    val thumbs = sn.optJSONObject("thumbnails")
+                    val thumb = (thumbs?.optJSONObject("high") ?: thumbs?.optJSONObject("medium")
+                        ?: thumbs?.optJSONObject("default"))?.optString("url").orEmpty()
+                    YtVideo(id, decode(sn.optString("title")), decode(sn.optString("channelTitle")), thumb)
+                }
+            } finally {
+                conn.disconnect()
+            }
+        }
+    }
+
+    /** Most popular videos right now in the given country. Costs 1 quota unit. */
+    suspend fun trending(key: String, region: String): Result<List<YtVideo>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = URL(
+                "https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&maxResults=24" +
+                    "&regionCode=" + URLEncoder.encode(region, "UTF-8") +
+                    "&key=" + URLEncoder.encode(key, "UTF-8")
+            )
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            try {
+                if (conn.responseCode !in 200..299) throw IOException("YouTube returned error ${conn.responseCode}")
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val items = JSONObject(body).optJSONArray("items") ?: JSONArray()
+                (0 until items.length()).mapNotNull { i ->
+                    val item = items.getJSONObject(i)
+                    val id = item.optString("id")
                     if (id.isEmpty()) return@mapNotNull null
                     val sn = item.optJSONObject("snippet") ?: return@mapNotNull null
                     val thumbs = sn.optJSONObject("thumbnails")
@@ -224,10 +256,18 @@ fun YouTubeScreen(
     val scope = rememberCoroutineScope()
 
     // The car screen gets CarToon's own big keyboard; the phone uses its normal keyboard.
-    var keyboardOpen by remember { mutableStateOf(ui.car && state.results.isEmpty()) }
+    var keyboardOpen by remember { mutableStateOf(false) }
     var listening by remember { mutableStateOf(false) }
     val voice = remember { VoiceSearch(context) }
     DisposableEffect(Unit) { onDispose { voice.stop() } }
+
+    // Fill the page with what's trending until the user searches.
+    LaunchedEffect(apiKey) {
+        if (apiKey.isNotBlank() && state.trending.isEmpty()) {
+            val region = java.util.Locale.getDefault().country.ifBlank { "US" }
+            YouTubeApi.trending(apiKey, region).onSuccess { state.trending = it }
+        }
+    }
 
     fun runSearch() {
         val q = state.query.trim()
@@ -375,6 +415,22 @@ fun YouTubeScreen(
                 modifier = Modifier.fillMaxSize(),
             ) { BigButton("Try again") { runSearch() } }
 
+            state.results.isEmpty() && !state.searched && state.trending.isNotEmpty() -> Column(Modifier.fillMaxSize()) {
+                Text("Trending now", fontSize = ui.title, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = if (ui.short) 200.dp else 240.dp),
+                    contentPadding = PaddingValues(bottom = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(state.trending, key = { it.id }) { video ->
+                        VideoCard(video) { onPlay(video) }
+                    }
+                }
+            }
+
             state.results.isEmpty() -> EmptyState(
                 icon = AppIcons.Search,
                 title = if (state.searched) "No videos found" else "Search for a video",
@@ -433,6 +489,7 @@ fun OnScreenKeyboard(
     onClear: () -> Unit,
     onSearch: () -> Unit,
     modifier: Modifier = Modifier,
+    actionLabel: String = "Search",
 ) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
@@ -447,7 +504,7 @@ fun OnScreenKeyboard(
             Key("Clear", weight = 1.5f, onClick = onClear)
             Key("Space", weight = 5f) { onKey(" ") }
             Key("", weight = 1.5f, icon = true, onClick = onBackspace)
-            Key("Search", weight = 2f, accent = true, onClick = onSearch)
+            Key(actionLabel, weight = 2f, accent = true, onClick = onSearch)
         }
     }
 }

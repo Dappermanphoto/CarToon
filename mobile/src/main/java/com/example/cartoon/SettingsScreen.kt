@@ -50,10 +50,13 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun SettingsScreen(
+    obd: ObdManager,
     settings: AppSettings,
     onChange: (AppSettings) -> Unit,
     folder: Uri?,
     onPickFolder: () -> Unit,
+    extra: @Composable () -> Unit = {},
+    onSecretTap: () -> Unit = {},
 ) {
     val ui = LocalUi.current
     val context = LocalContext.current
@@ -181,7 +184,7 @@ fun SettingsScreen(
             val cs = MaterialTheme.colorScheme
             Text(
                 "Paste the Client ID from your app at developer.spotify.com/dashboard. " +
-                    "Its Redirect URI must be $SPOTIFY_REDIRECT_URI and its Android package com.example.cartoon.",
+                    "Its Redirect URI must be $SPOTIFY_REDIRECT_URI and its Android package ${context.packageName}.",
                 fontSize = ui.small,
                 color = cs.onSurfaceVariant,
             )
@@ -234,6 +237,63 @@ fun SettingsScreen(
             }
         }
 
+        Section("OBD adapter") {
+            val cs = MaterialTheme.colorScheme
+            val scanPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+            ) { r -> if (r.values.all { it }) obd.startScan() }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (settings.obdAddress.isBlank()) "No adapter chosen"
+                        else settings.obdName.ifBlank { settings.obdAddress },
+                        fontSize = ui.body,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Plug the adapter into the car, turn the ignition on, then scan. " +
+                            "A Vgate iCar Pro usually shows up as IOS-Vlink.",
+                        fontSize = ui.small,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Pill(if (obd.scanning) "Scanning…" else "Scan", selected = !obd.scanning, onClick = {
+                    if (ObdManager.hasPermission(context)) obd.startScan()
+                    else scanPermission.launch(ObdManager.PERMISSIONS)
+                })
+            }
+            val likely = listOf("vlink", "obd", "vgate", "elm", "icar")
+            obd.found.sortedByDescending { d -> likely.any { d.name.lowercase().contains(it) } }.forEach { d ->
+                val chosen = d.address == settings.obdAddress
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (chosen) cs.primary.copy(alpha = 0.2f) else cs.surfaceVariant)
+                        .clickable {
+                            onChange(settings.copy(obdAddress = d.address, obdName = d.name))
+                            obd.stopScan()
+                        }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(d.name, fontSize = ui.body, fontWeight = FontWeight.SemiBold)
+                        Text(d.address, fontSize = ui.small, color = cs.onSurfaceVariant)
+                    }
+                    if (chosen) Text("Selected", fontSize = ui.small, color = cs.primary)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            ToggleRow(
+                title = "Metric units",
+                body = "Show km/h, °C and kPa instead of mph, °F and psi.",
+                checked = settings.metricUnits,
+            ) { onChange(settings.copy(metricUnits = it)) }
+        }
+
         Section("Music apps") {
             val cs = MaterialTheme.colorScheme
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -272,14 +332,55 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(8.dp))
-        Text(
-            "CarToon " + runCatching {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName
-            }.getOrNull().orEmpty(),
-            fontSize = ui.small,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 24.dp),
-        )
+        // Settings for add-on modules
+        extra()
+
+        // Opens the profile in the Instagram app; falls back to the browser only if it isn't installed.
+        val openInstagram = {
+            val profile = Uri.parse("https://www.instagram.com/slowcd7/")
+            val inApp = android.content.Intent(android.content.Intent.ACTION_VIEW, profile)
+                .setPackage("com.instagram.android")
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { context.startActivity(inApp) }.onFailure {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, profile)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }
+            Unit
+        }
+        // The logo is the Instagram app's own icon, read from the phone.
+        val instagramIcon = rememberAppIcon("com.instagram.android")
+        Row(
+            Modifier.align(Alignment.CenterHorizontally).padding(bottom = 24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "CarToon V1.6    Made by @SlowCD7",
+                fontSize = ui.small,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = onSecretTap,
+                ),
+            )
+            Spacer(Modifier.width(10.dp))
+            if (instagramIcon != null) {
+                androidx.compose.foundation.Image(
+                    instagramIcon,
+                    contentDescription = "Open @slowcd7 on Instagram",
+                    modifier = Modifier
+                        .size(if (ui.short) 30.dp else 34.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .clickable(onClick = openInstagram),
+                )
+            } else {
+                Pill("Instagram", onClick = openInstagram)
+            }
+        }
     }
 }
 

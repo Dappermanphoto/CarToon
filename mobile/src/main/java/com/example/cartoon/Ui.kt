@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -190,6 +191,25 @@ object AppIcons {
     }
     val Check by lazy { icon("M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z") }
 
+    val Gauge by lazy {
+        icon(
+            "M20.38,8.57l-1.23,1.85a8,8 0,0 1,-0.22 7.58L5.07,18A8,8 0,0 1,15.58 6.85l1.85,-1.23" +
+                "A10,10 0,0 0,3.35 19a2,2 0,0 0,1.72 1h13.85a2,2 0,0 0,1.74 -1,10 10,0 0,0 -0.27,-10.44z" +
+                "M10.59,15.41a2,2 0,0 0,2.83 0l5.66,-8.49 -8.49,5.66a2,2 0,0 0,0 2.83z"
+        )
+    }
+
+    val Shuffle by lazy {
+        icon(
+            "M10.59,9.17L5.41,4 4,5.41l5.17,5.17 1.42,-1.41zM14.5,4l2.04,2.04L4,18.59 5.41,20 17.96,7.46 20,9.5V4h-5.5z" +
+                "M14.83,13.41l-1.41,1.41 3.13,3.13L14.5,20H20v-5.5l-2.04,2.04 -3.13,-3.13z"
+        )
+    }
+    val Repeat by lazy { icon("M7,7h10v3l4,-4 -4,-4v3H5v6h2V7zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4z") }
+    val RepeatOne by lazy {
+        icon("M7,7h10v3l4,-4 -4,-4v3H5v6h2V7zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4zM13,15V9h-1l-2,1v1h1.5v4H13z")
+    }
+
     private fun icon(path: String): ImageVector =
         ImageVector.Builder(
             defaultWidth = 24.dp,
@@ -236,6 +256,10 @@ fun Pill(
 ) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val press by animateFloatAsState(if (pressed) 0.93f else 1f, label = "pillPress")
+    val fill by animateColorAsState(if (selected) color else color.copy(alpha = 0.14f), label = "pillFill")
     Text(
         text,
         fontSize = ui.small,
@@ -243,9 +267,10 @@ fun Pill(
         color = if (selected) cs.onPrimary else color,
         maxLines = 1,
         modifier = Modifier
+            .graphicsLayer { scaleX = press; scaleY = press }
             .clip(RoundedCornerShape(50))
-            .background(if (selected) color else color.copy(alpha = 0.14f))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .background(fill)
+            .then(if (onClick != null) Modifier.clickable(interactionSource = source, indication = null, onClick = onClick) else Modifier)
             .padding(horizontal = if (ui.short) 12.dp else 14.dp, vertical = if (ui.short) 6.dp else 7.dp),
     )
 }
@@ -552,4 +577,19 @@ fun LyricsPanel(
 fun formatTime(ms: Long): String {
     val total = (ms / 1000).coerceAtLeast(0L)
     return "%d:%02d".format(total / 60, total % 60)
+}
+
+/** The real icon of an app installed on the phone (such as Spotify), or null if it isn't installed. */
+@Composable
+fun rememberAppIcon(packageName: String): androidx.compose.ui.graphics.ImageBitmap? {
+    val context = LocalContext.current
+    return remember(packageName) {
+        runCatching {
+            val drawable = context.packageManager.getApplicationIcon(packageName)
+            val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+            drawable.setBounds(0, 0, 128, 128)
+            drawable.draw(android.graphics.Canvas(bitmap))
+            bitmap.asImageBitmap()
+        }.getOrNull()
+    }
 }

@@ -1,13 +1,16 @@
 package com.example.cartoon
 
 import android.content.Context
+import android.content.res.Configuration
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
-enum class ThemeMode(val label: String) { NIGHT("Night"), DAY("Day"), CUSTOM("Custom") }
+enum class ThemeMode(val label: String) { DYNAMIC("Wallpaper"), NIGHT("Night"), DAY("Day"), CUSTOM("Custom") }
 
 /** Soft, dark gradients for Custom mode. */
 enum class GradientPreset(val label: String, val colors: List<Color>) {
@@ -32,13 +35,16 @@ enum class LyricSize(val label: String, val scale: Float) {
 }
 
 data class AppSettings(
-    val themeMode: ThemeMode = ThemeMode.NIGHT,
+    val themeMode: ThemeMode = ThemeMode.DYNAMIC,
     val gradient: GradientPreset = GradientPreset.AURORA,
     val accent: Accent = Accent.AMBER,
     val lyricSize: LyricSize = LyricSize.MEDIUM,
     val carOpensNowPlaying: Boolean = true,
     val youtubeKey: String = "",
     val spotifyClientId: String = "",
+    val obdAddress: String = "",
+    val obdName: String = "",
+    val metricUnits: Boolean = false,
 )
 
 /** Saves settings on the phone so they stick between launches. */
@@ -55,6 +61,9 @@ class SettingsStore(context: Context) {
             carOpensNowPlaying = prefs.getBoolean("car_now_playing", d.carOpensNowPlaying),
             youtubeKey = prefs.getString("youtube_key", "").orEmpty(),
             spotifyClientId = prefs.getString("spotify_client_id", "").orEmpty(),
+            obdAddress = prefs.getString("obd_address", "").orEmpty(),
+            obdName = prefs.getString("obd_name", "").orEmpty(),
+            metricUnits = prefs.getBoolean("metric_units", false),
         )
     }
 
@@ -67,6 +76,9 @@ class SettingsStore(context: Context) {
             .putBoolean("car_now_playing", s.carOpensNowPlaying)
             .putString("youtube_key", s.youtubeKey.trim())
             .putString("spotify_client_id", s.spotifyClientId.trim())
+            .putString("obd_address", s.obdAddress)
+            .putString("obd_name", s.obdName)
+            .putBoolean("metric_units", s.metricUnits)
             .apply()
     }
 
@@ -76,7 +88,33 @@ class SettingsStore(context: Context) {
 
 data class AppTheme(val colors: ColorScheme, val background: Brush, val isDark: Boolean)
 
-fun AppSettings.toTheme(): AppTheme = when (themeMode) {
+/**
+ * Builds the colors. "Wallpaper" uses Android's Material You colors taken from the phone's
+ * wallpaper (like Pixel and Samsung One UI apps) and follows the phone's dark mode.
+ */
+fun AppSettings.toTheme(context: Context? = null): AppTheme = when (themeMode) {
+    ThemeMode.DYNAMIC -> {
+        val dark = context?.let {
+            (it.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        } ?: true
+        val base = when {
+            context == null -> darkColorScheme()
+            dark -> dynamicDarkColorScheme(context)
+            else -> dynamicLightColorScheme(context)
+        }
+        AppTheme(
+            // Cards sit on a slightly raised tone, like One UI / Material 3 surfaces.
+            colors = base.copy(
+                surface = base.surfaceContainerHigh,
+                surfaceVariant = base.surfaceContainerHighest,
+                outline = base.outlineVariant,
+            ),
+            background = Brush.verticalGradient(listOf(base.surfaceContainerLow, base.surfaceContainerLowest)),
+            isDark = dark,
+        )
+    }
+
+
     ThemeMode.NIGHT -> AppTheme(
         colors = darkColorScheme(
             primary = accent.color,

@@ -1,5 +1,8 @@
 package com.example.cartoon
 
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.WindowInsets
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
@@ -55,6 +58,7 @@ import com.spotify.protocol.client.Subscription
 import com.spotify.protocol.types.Image
 import com.spotify.protocol.types.ImageUri
 import com.spotify.protocol.types.ListItem
+import com.spotify.protocol.types.PlayerContext
 import com.spotify.protocol.types.PlayerState
 import com.spotify.sdk.android.auth.AuthorizationClient
 import com.spotify.sdk.android.auth.AuthorizationRequest
@@ -122,6 +126,43 @@ class SpotifyController(context: Context) {
         private set
     var art by mutableStateOf<Bitmap?>(null)
         private set
+    var shuffle by mutableStateOf(false)
+        private set
+
+    /** 0 = off, 1 = repeat one, 2 = repeat all (Spotify's values). */
+    var repeatMode by mutableStateOf(0)
+        private set
+
+    fun toggleShuffle() { remote?.playerApi?.toggleShuffle() }
+    fun toggleRepeat() { remote?.playerApi?.toggleRepeat() }
+
+    /** Web API access (your playlists, albums and liked songs with cover art). */
+    val web = SpotifyWeb(appContext)
+
+    /** Name of the playlist or album that's playing, when Spotify says. */
+    var playingFrom by mutableStateOf<String?>(null)
+        private set
+
+    /** True when the current song is in your Liked Songs. */
+    var liked by mutableStateOf(false)
+        private set
+    private var likedFor: String? = null
+    private var contextSub: Subscription<PlayerContext>? = null
+
+    fun playUri(uri: String) { remote?.playerApi?.play(uri) }
+    fun queueUri(uri: String) { remote?.playerApi?.queue(uri) }
+    fun seekBy(ms: Long) { remote?.playerApi?.seekToRelativePosition(ms) }
+
+    fun toggleLiked() {
+        val uri = track?.uri?.takeIf { it.isNotBlank() } ?: return
+        val api = remote?.userApi ?: return
+        if (liked) api.removeFromLibrary(uri).setResultCallback { liked = false }
+        else api.addToLibrary(uri).setResultCallback { liked = true }
+    }
+
+    private fun refreshLiked(uri: String) {
+        remote?.userApi?.getLibraryState(uri)?.setResultCallback { liked = it.isAdded }
+    }
 
     val installed: Boolean get() = SpotifyAppRemote.isSpotifyInstalled(appContext)
 
@@ -163,6 +204,8 @@ class SpotifyController(context: Context) {
     fun disconnect() {
         stateSub?.cancel()
         stateSub = null
+        contextSub?.cancel()
+        contextSub = null
         remote?.let { SpotifyAppRemote.disconnect(it) }
         remote = null
         status = Status.DISCONNECTED
@@ -204,7 +247,7 @@ class SpotifyController(context: Context) {
 
     fun thumbnail(uri: ImageUri, onResult: (Bitmap) -> Unit) {
         thumbs.get(uri.raw)?.let { return onResult(it) }
-        remote?.imagesApi?.getImage(uri, Image.Dimension.THUMBNAIL)?.setResultCallback { bmp ->
+        remote?.imagesApi?.getImage(uri, Image.Dimension.MEDIUM)?.setResultCallback { bmp ->
             if (bmp != null) {
                 thumbs.put(uri.raw, bmp)
                 onResult(bmp)
@@ -215,9 +258,15 @@ class SpotifyController(context: Context) {
     private fun subscribe() {
         stateSub = remote?.playerApi?.subscribeToPlayerState()
         stateSub?.setEventCallback { ps -> onPlayerState(ps) }
+        contextSub = remote?.playerApi?.subscribeToPlayerContext()
+        contextSub?.setEventCallback { ctx -> playingFrom = ctx.title?.takeIf { it.isNotBlank() } }
     }
 
     private fun onPlayerState(ps: PlayerState) {
+        ps.playbackOptions?.let {
+            shuffle = it.isShuffling
+            repeatMode = it.repeatMode
+        }
         val t = ps.track
         if (t == null) {
             track = null
@@ -234,6 +283,11 @@ class SpotifyController(context: Context) {
             baseTime = SystemClock.elapsedRealtime(),
             speed = if (ps.playbackSpeed > 0f) ps.playbackSpeed else 1f,
         )
+        val trackUri = t.uri.orEmpty()
+        if (trackUri.isNotBlank() && trackUri != likedFor) {
+            likedFor = trackUri
+            refreshLiked(trackUri)
+        }
         val image = t.imageUri
         if (image != null && image.raw != artFor) {
             artFor = image.raw
@@ -246,7 +300,7 @@ class SpotifyController(context: Context) {
         "NotLoggedInException" -> "Open the Spotify app and log in first."
         "UserNotAuthorizedException", "AuthenticationFailedException" ->
             "Spotify needs your approval. Tap Sign in with Spotify. If that fails too, check the " +
-                "Spotify dashboard: package com.example.cartoon, the SHA1 from CarToon's Settings, and " +
+                "Spotify dashboard: package ${appContext.packageName}, the SHA1 from CarToon's Settings, and " +
                 "your account under User Management."
         "UnsupportedFeatureVersionException" -> "Update the Spotify app, then try again."
         "OfflineModeException" -> "Spotify is in offline mode. Turn it off and try again."
@@ -269,6 +323,7 @@ fun SpotifyScreen(spotify: SpotifyController, clientId: String, onOpenSettings: 
         when (response.type) {
             AuthorizationResponse.Type.TOKEN -> {
                 spotify.markSignedIn(true)
+                spotify.web.setToken(response.accessToken, response.expiresIn)
                 spotify.connect(context, clientId)
             }
             AuthorizationResponse.Type.ERROR ->
@@ -276,21 +331,32 @@ fun SpotifyScreen(spotify: SpotifyController, clientId: String, onOpenSettings: 
             else -> spotify.reportError("Sign-in was cancelled.")
         }
     }
-    val connectOrSignIn: () -> Unit = {
-        if (spotify.signedIn || activity == null) {
-            spotify.connect(context, clientId)
-        } else {
+    val launchSignIn: () -> Unit = {
+        if (activity != null) {
             val request = AuthorizationRequest.Builder(
                 clientId,
                 AuthorizationResponse.Type.TOKEN,
                 SPOTIFY_REDIRECT_URI,
-            ).setScopes(arrayOf("app-remote-control")).build()
+            ).setScopes(
+                arrayOf(
+                    "app-remote-control",
+                    "playlist-read-private",
+                    "playlist-read-collaborative",
+                    "user-library-read",
+                    "user-library-modify",
+                    "user-read-playback-state",
+                )
+            ).build()
             signIn.launch(AuthorizationClient.createLoginActivityIntent(activity, request))
         }
     }
+    val connectOrSignIn: () -> Unit = {
+        if (spotify.signedIn || activity == null) spotify.connect(context, clientId) else launchSignIn()
+    }
 
     Column(Modifier.fillMaxSize().padding(horizontal = ui.pad, vertical = 12.dp)) {
-        if (!(ui.short && ui.wide)) {
+        val keyboardUp = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+        if (!(ui.short && ui.wide) && !keyboardUp) {
             Text("Spotify", fontSize = ui.headline, fontWeight = FontWeight.Black)
             Spacer(Modifier.height(12.dp))
         }
@@ -333,13 +399,13 @@ fun SpotifyScreen(spotify: SpotifyController, clientId: String, onOpenSettings: 
                 )
             }
 
-            else -> SpotifyConnected(spotify)
+            else -> SpotifyConnected(spotify, launchSignIn)
         }
     }
 }
 
 @Composable
-private fun SpotifyConnected(spotify: SpotifyController) {
+private fun SpotifyConnected(spotify: SpotifyController, onSignIn: () -> Unit) {
     val ui = LocalUi.current
 
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
@@ -351,11 +417,11 @@ private fun SpotifyConnected(spotify: SpotifyController) {
     }
 
     val t = spotify.track
-    val track: @Composable (Modifier, Boolean) -> Unit = { modifier, compact ->
-        TrackPane(
+    val hero: @Composable (Modifier) -> Unit = { modifier ->
+        MediaHero(
             title = t?.title ?: "Nothing playing",
             subtitle = t?.artist ?: "Pick something from the list",
-            source = "Spotify",
+            source = spotify.playingFrom,
             art = spotify.art,
             isPlaying = t != null && !t.isPaused,
             position = t?.positionAt(now) ?: 0L,
@@ -365,23 +431,122 @@ private fun SpotifyConnected(spotify: SpotifyController) {
             onPlayPause = spotify::playPause,
             onPrevious = spotify::previous,
             onNext = spotify::next,
-            compact = compact,
             modifier = modifier,
+            actions = {
+                val s = ui.iconButton * 0.88f
+                CircleIconButton(
+                    if (spotify.liked) HeartFilledIcon else HeartOutlineIcon,
+                    if (spotify.liked) "Remove from Liked Songs" else "Add to Liked Songs",
+                    s, { spotify.toggleLiked() }, primary = spotify.liked, enabled = t != null,
+                )
+                CircleIconButton(AppIcons.Rewind, "Back 15 seconds", s, { spotify.seekBy(-15_000) }, enabled = t != null)
+                CircleIconButton(AppIcons.Shuffle, "Shuffle", s, { spotify.toggleShuffle() }, primary = spotify.shuffle)
+                CircleIconButton(
+                    if (spotify.repeatMode == 1) AppIcons.RepeatOne else AppIcons.Repeat,
+                    "Repeat",
+                    s, { spotify.toggleRepeat() }, primary = spotify.repeatMode != 0,
+                )
+                CircleIconButton(AppIcons.Forward, "Forward 15 seconds", s, { spotify.seekBy(15_000) }, enabled = t != null)
+            },
         )
     }
 
+    // The whole screen takes on the color of the album cover
+    val cover = remember(spotify.art) { dominantColor(spotify.art) }
+    val tint by androidx.compose.animation.animateColorAsState(
+        (cover ?: MaterialTheme.colorScheme.primary).copy(alpha = 0.42f),
+        androidx.compose.animation.core.tween(900),
+        label = "albumTint",
+    )
+    Box(
+        Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(32.dp))
+            .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(tint, androidx.compose.ui.graphics.Color.Transparent)))
+            .padding(6.dp)
+    ) {
     if (ui.wide) {
         Row(Modifier.fillMaxSize()) {
-            track(Modifier.weight(0.4f).fillMaxHeight(), false)
+            hero(Modifier.weight(0.6f).fillMaxHeight())
             Spacer(Modifier.width(ui.pad))
-            BrowsePanel(spotify, Modifier.weight(0.6f).fillMaxHeight())
+            SpotifyLibrary(spotify, onSignIn, Modifier.weight(0.4f).fillMaxHeight())
         }
     } else {
+        // Phone held upright: a compact player on top so the library gets the room. Tap it to
+        // open the full player. While the keyboard is up, the player steps aside for the results.
+        var expanded by remember { mutableStateOf(false) }
+        val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
         Column(Modifier.fillMaxSize()) {
-            track(Modifier.fillMaxWidth(), true)
-            Spacer(Modifier.height(14.dp))
-            BrowsePanel(spotify, Modifier.weight(1f).fillMaxWidth())
+            if (expanded && !imeVisible) {
+                hero(Modifier.weight(1f).fillMaxWidth())
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    Pill("Show library", selected = true, onClick = { expanded = false })
+                }
+            } else {
+                if (!imeVisible) {
+                    SpotifyMini(spotify, now, onClick = { expanded = true })
+                    Spacer(Modifier.height(10.dp))
+                }
+                SpotifyLibrary(spotify, onSignIn, Modifier.weight(1f).fillMaxWidth())
+            }
         }
+    }
+    }
+}
+
+/** Compact player for the phone: cover, title, basic controls and the wavy seek bar. */
+@Composable
+private fun SpotifyMini(spotify: SpotifyController, now: Long, onClick: () -> Unit) {
+    val ui = LocalUi.current
+    val cs = MaterialTheme.colorScheme
+    val t = spotify.track
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(28.dp))
+            .background(cs.surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ArtTile(spotify.art, AppIcons.Note, 56.dp, cs.secondary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    t?.title ?: "Nothing playing",
+                    fontSize = ui.body,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    t?.artist ?: "Pick something below",
+                    fontSize = ui.small,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            val s = ui.iconButton * 0.9f
+            CircleIconButton(AppIcons.Previous, "Previous", s, { spotify.previous() })
+            Spacer(Modifier.width(6.dp))
+            CircleIconButton(
+                if (t != null && !t.isPaused) AppIcons.Pause else AppIcons.Play,
+                if (t != null && !t.isPaused) "Pause" else "Play",
+                s, { spotify.playPause() }, primary = true,
+            )
+            Spacer(Modifier.width(6.dp))
+            CircleIconButton(AppIcons.Next, "Next", s, { spotify.next() })
+        }
+        Spacer(Modifier.height(2.dp))
+        WavySeekBar(
+            position = t?.positionAt(now) ?: 0L,
+            duration = t?.durationMs ?: 0L,
+            canSeek = t != null,
+            playing = t != null && !t.isPaused,
+            onSeek = spotify::seekTo,
+        )
     }
 }
 

@@ -119,80 +119,23 @@ private fun NowPlayingContent(
         }
     }
 
-    val songKey = "${song.packageName}|${song.title}|${song.artist}"
-    var lyrics by remember(songKey) { mutableStateOf<Lyrics?>(null) }
-    var offsetMs by remember(songKey) { mutableLongStateOf(0L) }
-    LaunchedEffect(songKey, library) {
-        val uri = library.findLyrics(song.title, song.artist)
-        lyrics = uri?.let { withContext(Dispatchers.IO) { MediaLibrary.readText(context, it)?.let(Lyrics::parse) } }
-    }
-
     val position = song.positionAt(now)
-    val lyricPosition = position + offsetMs
-    val l = lyrics
 
-    val emptyTitle = "No lyrics for this song"
-    val emptyBody = if (hasFolder) {
-        "Add a lyrics file named \"${song.artist.ifBlank { "Artist" }} - ${song.title}.lrc\" " +
-            "to your CarToon folder, then tap Refresh in Library."
-    } else {
-        "Choose your CarToon folder, then add .lrc lyrics files named \"Artist - Title.lrc\"."
-    }
-
-    val timing: @Composable () -> Unit = {
-        if (l != null && l.synced) {
-            Spacer(Modifier.height(if (ui.wide) 20.dp else 10.dp))
-            TimingRow(offsetMs) { offsetMs = it }
-        }
-    }
-
-    val track: @Composable (Modifier, Boolean) -> Unit = { modifier, compact ->
-        TrackPane(
-            title = song.title,
-            subtitle = song.artist,
-            source = song.appName,
-            art = song.art,
-            isPlaying = song.isPlaying,
-            position = position,
-            duration = song.durationMs,
-            canSeek = song.canSeek,
-            onSeek = tracker::seekTo,
-            onPlayPause = tracker::playPause,
-            onPrevious = tracker::previous,
-            onNext = tracker::next,
-            compact = compact,
-            modifier = modifier,
-            extra = timing,
-        )
-    }
-
-    val chooseFolder: @Composable () -> Unit = { BigButton("Choose folder", onPickFolder) }
-
-    val panel: @Composable (Modifier) -> Unit = { modifier ->
-        LyricsPanel(
-            lyrics = l,
-            position = lyricPosition,
-            onSeek = if (song.canSeek) { t -> tracker.seekTo(t - offsetMs) } else null,
-            emptyTitle = emptyTitle,
-            emptyBody = emptyBody,
-            modifier = modifier,
-            emptyAction = if (!hasFolder) chooseFolder else null,
-        )
-    }
-
-    if (ui.wide) {
-        Row(Modifier.fillMaxSize()) {
-            track(Modifier.weight(0.4f).fillMaxHeight(), false)
-            Spacer(Modifier.width(ui.pad))
-            panel(Modifier.weight(0.6f).fillMaxHeight())
-        }
-    } else {
-        Column(Modifier.fillMaxSize()) {
-            track(Modifier.fillMaxWidth(), true)
-            Spacer(Modifier.height(14.dp))
-            panel(Modifier.weight(1f).fillMaxWidth())
-        }
-    }
+    MediaHero(
+        title = song.title,
+        subtitle = song.artist,
+        source = song.appName,
+        art = song.art,
+        isPlaying = song.isPlaying,
+        position = position,
+        duration = song.durationMs,
+        canSeek = song.canSeek,
+        onSeek = tracker::seekTo,
+        onPlayPause = tracker::playPause,
+        onPrevious = tracker::previous,
+        onNext = tracker::next,
+        modifier = Modifier.fillMaxSize(),
+    )
 }
 
 /** Lets the user nudge lyrics earlier or later if their file is slightly off. */

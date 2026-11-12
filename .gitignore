@@ -1,15 +1,25 @@
-*.iml
+# Local-only helper files (kept on your PC, not published)
+*.bat
+!gradlew.bat
+dhu/
+Release/
+/Release
+
+# Android Studio / Gradle / build output
+.idea/
+.kotlin/
 .gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
+*.iml
 /build
+build/
 /captures
 .externalNativeBuild
 .cxx
+.DS_Store
 local.properties
+/local.properties
+
+# Release signing (never upload these)
+keystore.properties
+*.jks
+*.keystore
