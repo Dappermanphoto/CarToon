@@ -24,5 +24,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "CarToon"
 include(":mobile")
-include(":automotive")
+// Android Automotive OS version (not used by CarToon on Android Auto)
+// include(":automotive")
 include(":shared")

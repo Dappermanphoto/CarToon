@@ -1,0 +1,2 @@
+com.example.cartoon.shared
+xml automotive_app_desc
