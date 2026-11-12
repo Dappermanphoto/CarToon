@@ -23,6 +23,18 @@ works while the car is parked; Android Auto closes it when you start driving.
 
 ---
 
+## Screenshots
+
+Shown on the car screen (Android Auto Desktop Head Unit).
+
+| OBD cluster (demo car) | Trouble codes |
+|---|---|
+| ![OBD cluster gauges](docs/screenshots/obd-cluster.png) | ![Trouble code list](docs/screenshots/obd-codes.png) |
+
+![Spotify player with the Up next queue](docs/screenshots/spotify.png)
+
+---
+
 ## Features
 
 | Tab | What it does |
