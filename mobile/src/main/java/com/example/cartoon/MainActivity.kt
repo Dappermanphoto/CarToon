@@ -80,8 +80,11 @@ class MainActivity : ComponentActivity() {
         player = ExoPlayer.Builder(this).build()
         tracker = NowPlayingTracker(this)
         spotify = SpotifyController(this)
-        obd = ObdManager(this)
-        modules = ObdModules(this, obd)
+        // Shared with the background service, so a connection made while the app was closed carries over
+        obd = ObdHub.obd(this)
+        modules = ObdHub.modules(this)
+        DashPrefs.init(this)
+        DtcDictionary.init(this)
         setContent { CarToonApp(player, tracker, spotify, obd, modules) }
     }
 
@@ -90,6 +93,7 @@ class MainActivity : ComponentActivity() {
         if (NowPlayingTracker.hasAccess(this)) tracker.start()
         if (spotify.wantConnected) spotify.connect(this)
         obd.polling = true
+        ObdHub.auto(this).trigger("foreground")
     }
 
     // Android Auto hides parked apps when the car starts moving; stop playback with it.
@@ -104,8 +108,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         player.release()
-        modules.stop()
-        obd.disconnect()
     }
 }
 
@@ -314,6 +316,10 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                     Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(
                         top = (if (modules.voltage.low) 44.dp else 0.dp) + (if (modules.alerts.hot) 44.dp else 0.dp),
                     ),
+                )
+                ConnectionPill(
+                    remember { ObdHub.auto(context) },
+                    Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(top = 4.dp, start = 8.dp),
                 )
                 if (!car) VinPrompt(obd, profile)
                 ParkedTestBadge(

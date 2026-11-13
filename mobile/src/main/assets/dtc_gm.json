@@ -1,0 +1,37 @@
+[
+  {
+    "code": "P1345",
+    "description": "Crankshaft Position (CKP) - Camshaft Position (CMP) Correlation",
+    "likely_cause": "Distributor installed off by one tooth, stretched timing chain, or faulty cam/crank sensor."
+  },
+  {
+    "code": "P1404",
+    "description": "EGR Valve Closed Position Performance",
+    "likely_cause": "Carbon buildup holding the EGR valve pintle open, or faulty EGR valve."
+  },
+  {
+    "code": "P1870",
+    "description": "Transmission Component Slipping",
+    "likely_cause": "Worn TCC regulator valve bore in the 4L60E valve body, causing torque converter slip and harsh 1-2 shifts."
+  },
+  {
+    "code": "P1860",
+    "description": "TCC PWM Solenoid Circuit Electrical",
+    "likely_cause": "Faulty Torque Converter Clutch Pulse Width Modulation solenoid or wiring harness inside the 4L60E transmission pan."
+  },
+  {
+    "code": "P1133",
+    "description": "HO2S Insufficient Switching Bank 1 Sensor 1",
+    "likely_cause": "Degraded or slow-responding upstream oxygen sensor, exhaust leak before the sensor, or wiring issue."
+  },
+  {
+    "code": "P1441",
+    "description": "EVAP System Flow During Non-Purge",
+    "likely_cause": "Defective EVAP purge solenoid stuck open, or cracked vacuum lines pulling fuel vapors into the intake manifold."
+  },
+  {
+    "code": "P1810",
+    "description": "TFP Valve Position Switch Circuit",
+    "likely_cause": "Faulty Transmission Fluid Pressure manual valve position switch assembly or debris in the 4L60E valve body."
+  }
+]

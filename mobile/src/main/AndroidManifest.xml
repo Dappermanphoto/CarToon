@@ -13,6 +13,12 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Voice search -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Zero-touch OBD connection: start at boot, keep a quiet connection service, show the status -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Optional controller support. Never set required="true". -->
     <uses-feature
@@ -36,6 +42,7 @@
 
     <!-- appCategory="game" is what lets Android Auto run this as a parked app. -->
     <application
+        android:name=".CarToonApplication"
         android:allowBackup="true"
         android:appCategory="game"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -86,6 +93,23 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- Quiet foreground service that finds and connects to the saved OBD adapter -->
+        <service
+            android:name=".ObdService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Boot and "Bluetooth device connected" triggers for zero-touch connecting -->
+        <receiver
+            android:name=".CarTriggerReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

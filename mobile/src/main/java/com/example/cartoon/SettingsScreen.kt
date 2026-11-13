@@ -317,6 +317,7 @@ fun SettingsScreen(
                 body = "Show km/h, °C and kPa instead of mph, °F and psi.",
                 checked = settings.metricUnits,
             ) { onChange(settings.copy(metricUnits = it)) }
+            ConnectionSection(settings, onChange)
         }
 
         Section("Music apps") {

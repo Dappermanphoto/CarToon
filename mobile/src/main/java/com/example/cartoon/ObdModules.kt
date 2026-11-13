@@ -21,6 +21,9 @@ class ObdModules(context: Context, val obd: ObdManager) {
     val health = HealthBaseline(context)
     val alerts = AlertMonitor(context, obd, voltage, scheduler)
     val odometer = OdometerTracker(context, obd, scheduler)
+    val thresholds = ThresholdMonitor(context, obd, ThresholdStore(context), scheduler)
+    val fuel = FuelMonitor(context, obd)
+    val perf = PerfTimer(obd, scheduler)
 
     init {
         scheduler.start(scope)
@@ -29,6 +32,9 @@ class ObdModules(context: Context, val obd: ObdManager) {
         trips.start(scope)
         alerts.start(scope)
         odometer.start(scope)
+        thresholds.start(scope)
+        fuel.start(scope)
+        perf.start(scope)
     }
 
     fun stop() {

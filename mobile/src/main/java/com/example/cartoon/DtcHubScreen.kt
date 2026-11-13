@@ -3,6 +3,8 @@ package com.example.cartoon
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,13 +56,14 @@ private fun DtcSeverity.color(): Color = when (this) {
  * descriptions, and clearing codes. Works on the phone and the car screen, and with the demo car.
  */
 @Composable
-fun DtcHubScreen(obd: ObdManager) {
+fun DtcHubScreen(obd: ObdManager, metric: Boolean = false) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
 
     var confirmClear by remember { mutableStateOf(false) }
     var lastRead by remember { mutableLongStateOf(0L) }
     var expanded by remember { mutableStateOf<String?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     // Read once when the hub opens, and note the time whenever a read finishes.
     LaunchedEffect(Unit) { if (obd.storedCodes == null) obd.readCodes() }
@@ -136,6 +139,13 @@ fun DtcHubScreen(obd: ObdManager) {
             Spacer(Modifier.width(8.dp))
             Pill("Clear", color = cs.onSurfaceVariant, onClick = { confirmClear = true })
         }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill(if (obd.freezeBusy) "Reading…" else "Freeze frame", onClick = { obd.readFreezeFrame() })
+            Pill("Share report", onClick = {
+                shareTextOnPhone(context, HealthReport.build(obd, metric, vehicle), "CarToon vehicle report")
+            })
+        }
         obd.codesNote?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, fontSize = ui.body, color = cs.primary)
@@ -164,6 +174,39 @@ fun DtcHubScreen(obd: ObdManager) {
                 pending.isEmpty() -> item { Hint("None.") }
                 else -> items(pending, key = { "p$it" }) { code ->
                     DtcCard(code, expanded == "p$code", vehicle) { expanded = if (expanded == "p$code") null else "p$code" }
+                }
+            }
+            item {
+                Spacer(Modifier.height(8.dp))
+                SectionLabel("Permanent codes", "Only the car can erase these, after it re-tests and passes. Clearing codes won't remove them.")
+            }
+            val perm = obd.permanentCodes
+            when {
+                perm == null -> item { Hint("Not read yet, or this car doesn't report them.") }
+                perm.isEmpty() -> item { Hint("None.") }
+                else -> items(perm, key = { "m$it" }) { code ->
+                    DtcCard(code, expanded == "m$code", vehicle) { expanded = if (expanded == "m$code") null else "m$code" }
+                }
+            }
+            val ff = obd.freezeFrame
+            if (ff != null || obd.freezeNote != null) {
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    SectionLabel("Freeze frame", "What the car measured the moment the fault was recorded" + (obd.freezeCode?.let { " ($it)" } ?: "") + ".")
+                }
+                if (ff == null) item { Hint(obd.freezeNote.orEmpty()) } else item {
+                    InfoCard {
+                        ff.forEach { (key, v) ->
+                            val pid = ObdPids[key] ?: return@forEach
+                            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                Text(pid.name, fontSize = ui.body, modifier = Modifier.weight(1f))
+                                Text(
+                                    "%.${pid.decimals}f %s".format(pid.value(v, metric), pid.unitFor(metric)),
+                                    fontSize = ui.body, fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -42,6 +43,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
@@ -62,7 +65,7 @@ private const val GAUGE_NAME_MAX = 16
 
 private enum class ObdView(val label: String) {
     CODES("Codes"), CLUSTER("Cluster"), SPLIT("Split"), GRAPH("Graph"), LIST("List"), VOLTS("Voltage"),
-    SMOG("Smog"), TRIPS("Trips"), HEALTH("Health"),
+    SMOG("Smog"), TRIPS("Trips"), HEALTH("Health"), OVERLAY("Overlay"), DRIVE("Drive"), TERMINAL("Terminal"),
 }
 
 @Composable
@@ -80,6 +83,7 @@ fun ObdScreen(
 
     var view by remember { mutableStateOf(if (ui.car) ObdView.CLUSTER else ObdView.CODES) }
     var graphPids by remember { mutableStateOf(listOf("0C", "0D")) }
+    var overlayPids by remember { mutableStateOf(listOf("0C", "0B", "05")) }
     var editing by remember { mutableStateOf<Int?>(null) }
 
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
@@ -93,9 +97,11 @@ fun ObdScreen(
     // Only ask the car for the sensors the current view shows.
     val gauges = obd.gauges
     val supported = obd.supported
-    LaunchedEffect(view, gauges, graphPids, supported, editing) {
+    LaunchedEffect(view, gauges, graphPids, overlayPids, supported, editing) {
         val wanted = when (view) {
-            ObdView.CODES, ObdView.SMOG, ObdView.TRIPS -> emptySet()
+            ObdView.CODES, ObdView.SMOG, ObdView.TRIPS, ObdView.TERMINAL -> emptySet()
+            ObdView.OVERLAY -> overlayPids.toSet()
+            ObdView.DRIVE -> setOf("0D", "0C", "0B", "0F", "10")
             ObdView.CLUSTER -> gauges.map { it.pid }.toSet()
             ObdView.SPLIT -> gauges.take(2).map { it.pid }.toSet()
             ObdView.HEALTH -> HealthBaseline.PIDS
@@ -166,6 +172,8 @@ fun ObdScreen(
 
             editing != null -> GaugeEditor(
                 obd = obd,
+                metric = metric,
+                thresholds = modules?.thresholds?.store,
                 index = editing ?: 0,
                 onDone = { editing = null },
             )
@@ -176,11 +184,15 @@ fun ObdScreen(
                         Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        ObdView.entries.forEach { v ->
+                        ObdView.entries.filter { !(ui.car && it == ObdView.TERMINAL) }.forEach { v ->
                             Pill(v.label, selected = view == v, onClick = { view = v })
                         }
                     }
                     Spacer(Modifier.width(8.dp))
+                    if (view == ObdView.CLUSTER) {
+                        Pill("HUD", selected = DashPrefs.hud, onClick = { DashPrefs.toggleHud() })
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Pill(if (obd.inDemo) "Exit demo" else "Disconnect", color = cs.onSurfaceVariant, onClick = { obd.disconnect() })
                 }
                 if (obd.inDemo) {
@@ -198,14 +210,17 @@ fun ObdScreen(
                 Spacer(Modifier.height(if (ui.short) 8.dp else 12.dp))
 
                 when (view) {
-                    ObdView.CODES -> DtcHubScreen(obd)
-                    ObdView.CLUSTER -> ClusterView(obd, metric) { editing = it }
+                    ObdView.CODES -> DtcHubScreen(obd, metric)
+                    ObdView.CLUSTER -> ClusterView(obd, metric, modules?.thresholds?.breached.orEmpty()) { editing = it }
                     ObdView.SPLIT -> SplitView(obd, metric, tracker)
                     ObdView.SMOG -> SmogView(obd)
                     ObdView.TRIPS -> if (modules != null) TripsView(modules.trips, metric)
                     ObdView.HEALTH -> if (modules != null) HealthView(obd, modules.health, metric)
                     ObdView.GRAPH -> GraphView(obd, metric, graphPids) { graphPids = it }
                     ObdView.LIST -> ListView(obd, metric)
+                    ObdView.OVERLAY -> OverlayGraph(obd, metric, overlayPids) { overlayPids = it }
+                    ObdView.DRIVE -> if (modules != null) DriveView(modules.fuel, modules.perf, metric)
+                    ObdView.TERMINAL -> TerminalView(obd)
                     ObdView.VOLTS -> if (modules != null) VoltagePanel(obd, modules.voltage)
                 }
             }
@@ -310,58 +325,88 @@ private fun CodeList(title: String, codes: List<String>?, emptyText: String) {
 /* ------------------------------ Cluster ------------------------------ */
 
 @Composable
-private fun ClusterView(obd: ObdManager, metric: Boolean, onEdit: (Int) -> Unit) {
+private fun ClusterView(obd: ObdManager, metric: Boolean, breached: Set<String>, onEdit: (Int) -> Unit) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
     val gauges = obd.gauges
-    val cols = if (ui.wide) 3 else 2
-    Column(Modifier.fillMaxSize()) {
-        gauges.chunked(cols).forEachIndexed { r, row ->
-            Row(Modifier.weight(1f).fillMaxWidth()) {
-                row.forEachIndexed { c, slot ->
-                    val index = r * cols + c
-                    Gauge(
-                        slot = slot,
-                        raw = obd.values[slot.pid],
-                        supported = slot.pid in obd.supported,
-                        metric = metric,
-                        onLongPress = { onEdit(index) },
-                        modifier = Modifier.weight(1f).fillMaxHeight().padding(4.dp),
-                    )
+    @Suppress("UNUSED_VARIABLE") val tick = obd.tick // redraw sparklines as readings arrive
+    val mirror = DashPrefs.hud
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val cols = when {
+            maxWidth >= 1000.dp -> 4
+            ui.wide || maxWidth >= 600.dp -> 3
+            else -> 2
+        }
+        val rows = (gauges.size + cols - 1) / cols
+        val footer = if (ui.short) 0.dp else 44.dp
+        val visibleRows = minOf(rows, if (maxHeight > 520.dp) 3 else 2).coerceAtLeast(1)
+        val rowHeight = ((maxHeight - footer) / visibleRows).coerceAtLeast(130.dp)
+        Column(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { scaleX = if (mirror) -1f else 1f }
+                .verticalScroll(rememberScrollState())
+        ) {
+            gauges.chunked(cols).forEachIndexed { r, row ->
+                Row(Modifier.fillMaxWidth().height(rowHeight)) {
+                    row.forEachIndexed { c, slot ->
+                        val index = r * cols + c
+                        Gauge(
+                            slot = slot,
+                            raw = obd.values[slot.pid],
+                            supported = slot.pid in obd.supported,
+                            metric = metric,
+                            alert = slot.pid in breached,
+                            history = if (slot.style == GaugeKind.SPARK) obd.historyOf(slot.pid).takeLast(60).map { v -> ObdPids[slot.pid]?.value(v, metric) ?: v } else emptyList(),
+                            onLongPress = { onEdit(index) },
+                            modifier = Modifier.weight(1f).fillMaxHeight().padding(4.dp),
+                        )
+                    }
+                    repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
-        }
-        if (!ui.short) {
             val context = LocalContext.current
             var layoutNote by remember { mutableStateOf<String?>(null) }
             Row(
-                Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp),
+                Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .graphicsLayer { scaleX = if (mirror) -1f else 1f }
+                    .padding(top = 4.dp, bottom = 8.dp)
+                    .horizontalScroll(rememberScrollState()),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    layoutNote ?: "Hold a gauge to change it",
+                if (!ui.short) Text(
+                    layoutNote ?: "Hold a gauge to edit, move or remove it",
                     fontSize = ui.small,
                     color = if (layoutNote != null) cs.primary else cs.onSurfaceVariant,
                 )
-                Pill("Copy layout", color = cs.onSurfaceVariant, onClick = {
-                    val code = GaugeLayout.encode(gauges)
-                    context.getSystemService(android.content.ClipboardManager::class.java)
-                        ?.setPrimaryClip(android.content.ClipData.newPlainText("CarToon layout", code))
-                    layoutNote = "Layout copied. Paste it to a friend."
-                })
-                if (!ui.car) {
-                    Pill("Paste layout", color = cs.onSurfaceVariant, onClick = {
-                        val text = context.getSystemService(android.content.ClipboardManager::class.java)
-                            ?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-                        val slots = GaugeLayout.decode(text, gauges.size)
-                        if (slots == null) {
-                            layoutNote = "No CarToon layout on the clipboard."
-                        } else {
-                            slots.forEachIndexed { i, slot -> obd.setGauge(i, slot) }
-                            layoutNote = "Layout applied."
-                        }
+                if (gauges.size < ObdManager.MAX_GAUGES) {
+                    Pill("Add gauge", selected = true, onClick = {
+                        obd.addGauge(GaugeSlot("0C", ObdPids["0C"]?.name.orEmpty()))
+                        onEdit(obd.gauges.lastIndex)
                     })
+                }
+                if (!ui.short) {
+                    Pill("Copy layout", color = cs.onSurfaceVariant, onClick = {
+                        val code = GaugeLayout.encode(gauges)
+                        context.getSystemService(android.content.ClipboardManager::class.java)
+                            ?.setPrimaryClip(android.content.ClipData.newPlainText("CarToon layout", code))
+                        layoutNote = "Layout copied. Paste it to a friend."
+                    })
+                    if (!ui.car) {
+                        Pill("Paste layout", color = cs.onSurfaceVariant, onClick = {
+                            val text = context.getSystemService(android.content.ClipboardManager::class.java)
+                                ?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                            val slots = GaugeLayout.decode(text)
+                            if (slots == null) {
+                                layoutNote = "No CarToon layout on the clipboard."
+                            } else {
+                                obd.replaceGauges(slots)
+                                layoutNote = "Layout applied."
+                            }
+                        })
+                    }
                 }
             }
         }
@@ -375,10 +420,10 @@ object GaugeLayout {
     fun encode(gauges: List<GaugeSlot>): String =
         PREFIX + gauges.joinToString("") { "|" + it.pid + ":" + it.name.replace("|", "").replace(":", "") }
 
-    /** Returns null when [text] isn't a layout for exactly [count] gauges using sensors CarToon knows. */
-    fun decode(text: String, count: Int): List<GaugeSlot>? {
+    /** Returns null when [text] isn't a layout of known sensors (any number up to the gauge limit). */
+    fun decode(text: String): List<GaugeSlot>? {
         val parts = text.trim().split("|")
-        if (parts.firstOrNull() != PREFIX || parts.size != count + 1) return null
+        if (parts.firstOrNull() != PREFIX || parts.size < 2 || parts.size - 1 > ObdManager.MAX_GAUGES) return null
         return parts.drop(1).map { part ->
             val pid = part.substringBefore(":")
             val known = ObdPids[pid] ?: return null
@@ -476,6 +521,8 @@ private fun Gauge(
     metric: Boolean,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier,
+    alert: Boolean = false,
+    history: List<Float> = emptyList(),
 ) {
     val cs = MaterialTheme.colorScheme
     val pid = ObdPids[slot.pid]
@@ -483,7 +530,8 @@ private fun Gauge(
     BoxWithConstraints(
         modifier
             .clip(RoundedCornerShape(28.dp))
-            .background(cs.surface)
+            .background(if (alert) AlertRed.copy(alpha = 0.22f).compositeOver(cs.surface) else cs.surface)
+            .then(if (alert) Modifier.border(3.dp, AlertRed, RoundedCornerShape(28.dp)) else Modifier)
             .pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress() }) }
             .padding(8.dp),
         contentAlignment = Alignment.Center,
@@ -504,7 +552,9 @@ private fun Gauge(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Box(Modifier.size(dial), contentAlignment = Alignment.Center) {
+            if (slot.style != GaugeKind.RADIAL) {
+                NonRadialReadout(slot.style, valueText, pid?.unitFor(metric).orEmpty(), history, dial, fill, alert)
+            } else Box(Modifier.size(dial), contentAlignment = Alignment.Center) {
                 Canvas(Modifier.fillMaxSize()) {
                     val stroke = size.minDimension * 0.085f
                     val inset = stroke / 2f
@@ -512,14 +562,14 @@ private fun Gauge(
                     val topLeft = Offset(inset, inset)
                     drawArc(track, 135f, 270f, false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
                     if (fraction > 0f) {
-                        drawArc(fill, 135f, 270f * fraction, false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
+                        drawArc(if (alert) AlertRed else fill, 135f, 270f * fraction, false, topLeft, arcSize, style = Stroke(stroke, cap = StrokeCap.Round))
                     }
                 }
                 // Value and unit stay inside the ring and shrink to fit long numbers.
                 Column(Modifier.fillMaxWidth(0.62f), horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicText(
                         valueText,
-                        style = TextStyle(color = cs.onSurface, fontWeight = FontWeight.Black, textAlign = TextAlign.Center),
+                        style = TextStyle(color = if (alert) AlertRed else cs.onSurface, fontWeight = FontWeight.Black, textAlign = TextAlign.Center),
                         maxLines = 1,
                         autoSize = TextAutoSize.StepBased(minFontSize = 10.sp, maxFontSize = (dialSp * 0.24f).coerceAtLeast(11f).sp),
                         modifier = Modifier.fillMaxWidth(),
@@ -547,16 +597,28 @@ private fun Gauge(
 
 /** Pick a different sensor for a gauge and rename it. */
 @Composable
-private fun GaugeEditor(obd: ObdManager, index: Int, onDone: () -> Unit) {
+private fun GaugeEditor(obd: ObdManager, metric: Boolean, thresholds: ThresholdStore?, index: Int, onDone: () -> Unit) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
     val slot = obd.gauges.getOrNull(index) ?: return onDone()
     var pidKey by remember { mutableStateOf(slot.pid) }
     var name by remember { mutableStateOf(slot.name) }
+    var style by remember { mutableStateOf(slot.style) }
+    val startLimits = remember { thresholds?.get(slot.pid) }
+    fun shown(raw: Float?): String = raw?.let { r -> ObdPids[slot.pid]?.value(r, metric)?.let { "%.1f".format(it).removeSuffix(".0") } }.orEmpty()
+    var minText by remember { mutableStateOf(shown(startLimits?.min)) }
+    var maxText by remember { mutableStateOf(shown(startLimits?.max)) }
+    var chime by remember { mutableStateOf(startLimits?.sound ?: true) }
 
     val save = {
         val finalName = name.trim().ifBlank { ObdPids[pidKey]?.name.orEmpty() }
-        obd.setGauge(index, GaugeSlot(pidKey, finalName))
+        obd.setGauge(index, GaugeSlot(pidKey, finalName, style))
+        val pid = ObdPids[pidKey]
+        if (thresholds != null && pid != null) {
+            val lo = minText.trim().toFloatOrNull()?.let { pid.toRaw(it, metric) }
+            val hi = maxText.trim().toFloatOrNull()?.let { pid.toRaw(it, metric) }
+            thresholds.set(pidKey, if (lo == null && hi == null) null else Threshold(lo, hi, chime))
+        }
         onDone()
     }
 
@@ -603,13 +665,42 @@ private fun GaugeEditor(obd: ObdManager, index: Int, onDone: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+                Spacer(Modifier.height(12.dp))
+                Text("STYLE", fontSize = ui.small, fontWeight = FontWeight.Bold, color = cs.primary)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GaugeKind.entries.forEach { k -> Pill(k.label, selected = style == k, onClick = { style = k }) }
+                }
+                if (!ui.car && thresholds != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "ALERT LIMITS  (${ObdPids[pidKey]?.unitFor(metric).orEmpty()})",
+                        fontSize = ui.small, fontWeight = FontWeight.Bold, color = cs.primary,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(minText, { minText = it.take(8) }, label = { Text("Min") }, singleLine = true, modifier = Modifier.weight(1f))
+                        OutlinedTextField(maxText, { maxText = it.take(8) }, label = { Text("Max") }, singleLine = true, modifier = Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Pill(if (chime) "Chime on" else "Chime off", selected = chime, onClick = { chime = !chime })
+                        Text("The tile turns red when a limit is crossed.", fontSize = ui.small, color = cs.onSurfaceVariant)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (index > 0) Pill("Move earlier", color = cs.onSurfaceVariant, onClick = { obd.moveGauge(index, -1); onDone() })
+                    if (index < obd.gauges.lastIndex) Pill("Move later", color = cs.onSurfaceVariant, onClick = { obd.moveGauge(index, 1); onDone() })
+                    if (obd.gauges.size > 1) Pill("Remove", color = AlertRed, onClick = { obd.removeGauge(index); onDone() })
+                }
             }
         }
         val sensorList: @Composable (Modifier) -> Unit = { modifier ->
             Column(modifier) {
                 Text("SENSOR", fontSize = ui.small, fontWeight = FontWeight.Bold, color = cs.primary)
                 Spacer(Modifier.height(6.dp))
-                val sorted = remember(obd.supported) { ObdPids.all.sortedByDescending { it.key in obd.supported } }
+                val sorted = remember(obd.supported) { ObdPids.everything.sortedByDescending { it.key in obd.supported } }
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxSize()) {
                     items(sorted, key = { it.key }) { pid ->
                         val available = pid.key in obd.supported
@@ -663,7 +754,7 @@ private fun GaugeEditor(obd: ObdManager, index: Int, onDone: () -> Unit) {
 private fun GraphView(obd: ObdManager, metric: Boolean, selected: List<String>, onSelect: (List<String>) -> Unit) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
-    val available = remember(obd.supported) { ObdPids.all.filter { it.key in obd.supported } }
+    val available = remember(obd.supported) { ObdPids.everything.filter { it.key in obd.supported } }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -743,7 +834,7 @@ private fun GraphView(obd: ObdManager, metric: Boolean, selected: List<String>, 
 private fun ListView(obd: ObdManager, metric: Boolean) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
-    val available = remember(obd.supported) { ObdPids.all.filter { it.key in obd.supported } }
+    val available = remember(obd.supported) { ObdPids.everything.filter { it.key in obd.supported } }
     LazyColumn(
         contentPadding = PaddingValues(bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),

@@ -78,10 +78,29 @@ class S10Simulator {
             c.length == 4 && c.startsWith("01") -> mode1(c.substring(2).toInt(16), s)
             c == "03" -> if (cleared) "NO DATA" else "43 " + codes.joinToString(" ") { it.chunked(2).joinToString(" ") }
             c == "07" -> "NO DATA"
+            c == "0A" -> if (cleared) "NO DATA" else "4A 01 04 01"
+            c == "020200" -> if (cleared) "NO DATA" else "42 02 00 04 01"
+            c.length == 6 && c.startsWith("02") && c.endsWith("00") -> freeze(c.substring(2, 4))
             c == "04" -> { cleared = true; "44" }
             c == "0902" -> vinFrames()
             c.length == 8 && c.startsWith("22") && c.endsWith("01") -> mode22(c.substring(2, 6), s)
             else -> "?"
+        }
+    }
+
+    /** Mode 02 reply: values from the moment the demo fault "happened". */
+    private fun freeze(pid: String): String {
+        if (cleared) return "NO DATA"
+        val p = "42 $pid 00 "
+        return p + when (pid) {
+            "0C" -> hex(2150 * 4, 2)
+            "0D" -> hex(72)
+            "05" -> hex(88 + 40)
+            "06" -> hex(130)
+            "07" -> hex(133)
+            "04" -> hex((46f * 255f / 100f).roundToInt())
+            "0B" -> hex(52)
+            else -> return "NO DATA"
         }
     }
 

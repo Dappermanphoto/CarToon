@@ -121,10 +121,21 @@ object ObdPids {
         },
     ) + GmPids.all
     private val byKey = all.associateBy { it.key }
-    operator fun get(key: String): ObdPid? = byKey[key]
+    private val base = all
+    private var extra: Map<String, ObdPid> = emptyMap()
+
+    /** Built-in sensors plus the custom ones for the active vehicle. */
+    val everything: List<ObdPid> get() = base + extra.values
+
+    /** Replaces the custom sensors (see [CustomPids]). */
+    fun setCustom(list: List<ObdPid>) {
+        extra = list.associateBy { it.key }
+    }
+
+    operator fun get(key: String): ObdPid? = byKey[key] ?: extra[key]
 }
 
-data class GaugeSlot(val pid: String, val name: String)
+data class GaugeSlot(val pid: String, val name: String, val style: GaugeKind = GaugeKind.RADIAL)
 
 data class ObdDevice(val name: String, val address: String, val classic: Boolean = false)
 
@@ -210,6 +221,25 @@ class ObdManager(context: Context) {
     val inDemo: Boolean get() = demoName.isNotEmpty()
 
     private var simulator: S10Simulator? = null
+    private val connCache = ConnectionCache(appContext)
+    private var currentAddress = ""
+    private var currentBle = true
+    private var quiet = false
+    private var customHeaderActive = false
+
+    /** True once the user taps Disconnect; auto-connect then leaves the adapter alone. */
+    @Volatile var userDisconnected = false
+
+    var permanentCodes by mutableStateOf<List<String>?>(null)
+        private set
+    var freezeFrame by mutableStateOf<Map<String, Float>?>(null)
+        private set
+    var freezeCode by mutableStateOf<String?>(null)
+        private set
+    var freezeBusy by mutableStateOf(false)
+        private set
+    var freezeNote by mutableStateOf<String?>(null)
+        private set
     private var gmMode = false
     private var header = ""
     private val deadPids = HashSet<String>()
@@ -232,8 +262,9 @@ class ObdManager(context: Context) {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val name = result.device.name ?: result.scanRecord?.deviceName ?: return
             val address = result.device.address ?: return
+            val name = result.device.name ?: result.scanRecord?.deviceName
+                ?: (if (connCache.showAllPaired) address else return)
             scope.launch {
                 if (found.none { it.address == address }) found += ObdDevice(name, address)
             }
@@ -259,7 +290,10 @@ class ObdManager(context: Context) {
         // Bluetooth Classic adapters (OBDLink LX/MX+, BAFX) must be paired in Android first
         runCatching { adapter?.bondedDevices }.getOrNull()?.forEach { d ->
             val n = d.name
-            if (n != null && d.type != BluetoothDevice.DEVICE_TYPE_LE && AdapterBrands.looksLikeObd(n)) {
+            if (connCache.showAllPaired) {
+                // Some car stereos hide non-audio devices, so list everything that's paired
+                found += ObdDevice(n ?: d.address, d.address, classic = d.type != BluetoothDevice.DEVICE_TYPE_LE)
+            } else if (n != null && d.type != BluetoothDevice.DEVICE_TYPE_LE && AdapterBrands.looksLikeObd(n)) {
                 found += ObdDevice(n, d.address, classic = true)
             }
         }
@@ -283,22 +317,26 @@ class ObdManager(context: Context) {
 
     /* ---------- Connecting ---------- */
 
-    fun connect(address: String) {
+    /** [quiet] is for automatic attempts: failures don't leave a message on screen. */
+    fun connect(address: String, quiet: Boolean = false) {
         if (state != State.DISCONNECTED) return
+        this.quiet = quiet
+        if (!quiet) userDisconnected = false
         val a = adapter
         if (a == null || !a.isEnabled) {
-            message = "Turn on Bluetooth first."
+            if (!quiet) message = "Turn on Bluetooth first."
             return
         }
         if (!hasPermission(appContext)) {
-            message = "CarToon needs the Nearby devices permission."
+            if (!quiet) message = "CarToon needs the Nearby devices permission."
             return
         }
         val device = runCatching { a.getRemoteDevice(address) }.getOrNull()
         if (device == null) {
-            message = "Pick your OBD adapter again in Settings."
+            if (!quiet) message = "Pick your OBD adapter again in Settings."
             return
         }
+        currentAddress = address
         val brand = AdapterBrands.detect(runCatching { device.name }.getOrNull())
         if (brand != null) {
             unsupportedAdapter = brand
@@ -316,15 +354,21 @@ class ObdManager(context: Context) {
         header = ""
         job = scope.launch {
             // Bluetooth Low Energy first for LE and unknown devices, then Bluetooth Classic (SPP)
-            val order = when (device.type) {
+            var order = when (device.type) {
                 BluetoothDevice.DEVICE_TYPE_CLASSIC -> listOf(false)
                 BluetoothDevice.DEVICE_TYPE_LE -> listOf(true)
                 else -> listOf(true, false)
             }
+            // The transport that worked last time goes first, so reconnecting is quick
+            val cachedBle = connCache.transportFor(address)
+            if (cachedBle != null && cachedBle in order) order = listOf(cachedBle) + order.filter { it != cachedBle }
             var ok = false
             for (ble in order) {
                 ok = if (ble) openBle(device) else openSpp(device)
-                if (ok) break
+                if (ok) {
+                    currentBle = ble
+                    break
+                }
                 closeLink()
             }
             if (!ok) {
@@ -397,6 +441,7 @@ class ObdManager(context: Context) {
     }
 
     fun disconnect() {
+        userDisconnected = true
         monitors = null
         job?.cancel()
         job = null
@@ -415,7 +460,7 @@ class ObdManager(context: Context) {
 
     private fun fail(text: String) {
         teardown()
-        message = text
+        message = if (quiet) null else text
     }
 
     private fun teardown() {
@@ -530,14 +575,15 @@ class ObdManager(context: Context) {
 
     /* ---------- Adapter commands ---------- */
 
-    private suspend fun command(cmd: String, timeoutMs: Long = 2500): String? = mutex.withLock {
+    private suspend fun command(cmd: String, timeoutMs: Long = 2500, clean: Boolean = true): String? = mutex.withLock {
         val sim = simulator
         val sock = socket
         val g = gatt
         val c = writeChar
         if (sim != null) {
             delay(25)
-            return@withLock clean(sim.respond(cmd), cmd)
+            val raw = sim.respond(cmd)
+            return@withLock if (clean) clean(raw, cmd) else raw
         }
         if (sock == null && (g == null || c == null)) return@withLock null
         val d = CompletableDeferred<String>()
@@ -557,7 +603,7 @@ class ObdManager(context: Context) {
             delay(60)
             return@withLock null
         }
-        withTimeoutOrNull(timeoutMs) { d.await() }?.let { clean(it, cmd) }
+        withTimeoutOrNull(timeoutMs) { d.await() }?.let { if (clean) clean(it, cmd) else it.trim() }
     }
 
     /** Writes in pieces that fit the negotiated packet size (20 bytes if the adapter never answered). */
@@ -584,8 +630,7 @@ class ObdManager(context: Context) {
             .filter { it.isNotEmpty() && it != cmd.uppercase() && !it.startsWith("SEARCHING") }
             .joinToString("\n")
 
-    private suspend fun setHeader(h: String): Boolean {
-        if (!gmMode) return true // CAN cars keep their own headers
+    private suspend fun useHeader(h: String): Boolean {
         if (h == header) return true
         val r = command("ATSH$h") ?: return false
         if (r.contains("?")) return false
@@ -593,25 +638,47 @@ class ObdManager(context: Context) {
         return true
     }
 
+    private suspend fun setHeader(h: String): Boolean = if (!gmMode) true else useHeader(h)
+
+    /** Puts the normal header back before a standard request (after a custom sensor changed it). */
+    private suspend fun stdHeader(pcm: Boolean): Boolean {
+        if (gmMode) return useHeader(if (pcm) GmPids.HEADER_PCM else GmPids.HEADER_FUNCTIONAL)
+        if (customHeaderActive) {
+            customHeaderActive = false
+            return useHeader(defaultHeader())
+        }
+        return true
+    }
+
+    private fun defaultHeader(): String = when (protocol.removePrefix("A").take(1)) {
+        "1" -> "616AF1"
+        "2", "3", "4", "5" -> "686AF1"
+        "7", "9", "B", "C" -> "18DB33F1"
+        else -> "7DF"
+    }
+
     private suspend fun initAdapter(): Boolean {
         val hello = command("ATZ", 4000) ?: command("ATZ", 4000) ?: return false
         if (hello.isEmpty()) return false
         header = ""
+        customHeaderActive = false
         for (c in listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1")) command(c)
         gmMode = simulator != null || Vehicles.presetFor(appContext) == GmPids.PRESET_S10
-        if (gmMode) {
-            // The 2001 S-10 talks J1850 VPW: try it directly, fall back to automatic
-            command("ATSP2")
-            setHeader(GmPids.HEADER_FUNCTIONAL)
-            loadSupported()
-            if (supported.size <= 1) {
-                command("ATSP0")
-                header = ""
-                loadSupported()
-            }
-        } else {
+        // Fast path: start with the protocol that worked last time instead of searching for one
+        val cached = if (simulator == null) connCache.protocolFor(currentAddress) else null
+        val first = cached ?: if (gmMode) "2" else "0"
+        command("ATSP$first")
+        setHeader(GmPids.HEADER_FUNCTIONAL)
+        loadSupported()
+        if (supported.size <= 1 && first != "0") {
+            // The remembered protocol didn't work (different car?). Fall back to automatic.
             command("ATSP0")
+            header = ""
             loadSupported()
+        }
+        if (supported.size > 1 && simulator == null && currentAddress.isNotEmpty()) {
+            val digit = protocol.removePrefix("A").take(1)
+            if (digit.isNotEmpty() && digit != "0") connCache.remember(currentAddress, currentBle, digit)
         }
         return true
     }
@@ -650,6 +717,7 @@ class ObdManager(context: Context) {
                 out += GmPids.keys.filter { it !in deadPids }
             }
             out += "ATRV"
+            out += CustomPids.refresh(appContext).map { it.key }
             supported = out
             message = null
         } else {
@@ -664,9 +732,10 @@ class ObdManager(context: Context) {
             return Regex("""\d+(\.\d+)?""").find(r)?.value?.toFloatOrNull()
         }
         val pid = ObdPids[key] ?: return null
+        CustomPids.spec(key)?.let { return queryCustom(key, pid, it) }
         val gm = GmPids.isGm(key)
         // Only change the header when it differs from the last one used
-        if (!setHeader(if (gm) GmPids.HEADER_PCM else GmPids.HEADER_FUNCTIONAL)) return null
+        if (!stdHeader(gm)) return null
         val cmd = if (gm) GmPids.request(key) else "01$key"
         val r = command(cmd) ?: return null
         if (gm && r.contains("7F22")) {
@@ -713,10 +782,74 @@ class ObdManager(context: Context) {
         }
     }
 
+    private suspend fun queryCustom(key: String, pid: ObdPid, spec: CustomPid): Float? {
+        val hdr = spec.header.uppercase().filter { it.isLetterOrDigit() }
+        val cmd = spec.command.uppercase().filter { it in "0123456789ABCDEF" }
+        if (cmd.length < 4) return null
+        val mode = cmd.substring(0, 2).toInt(16)
+        if (hdr.isNotEmpty()) {
+            if (!useHeader(hdr)) return null
+            customHeaderActive = true
+        } else if (!stdHeader(mode == 0x22)) {
+            return null
+        }
+        val r = command(cmd) ?: return null
+        if (r.contains("NODATA") || r.contains("?") || r.contains("7F")) {
+            val n = (misses[key] ?: 0) + 1
+            misses[key] = n
+            if (n >= 3) {
+                deadPids += key
+                supported = supported - key
+            }
+            return null
+        }
+        val pidLen = if (mode == 0x22 || mode == 0x21 || mode == 0x23) 2 else 1
+        val prefix = "%02X".format(mode + 0x40) + cmd.substring(2, minOf(cmd.length, 2 + pidLen * 2))
+        val hex = r.lines().firstNotNullOfOrNull { line ->
+            val i = line.indexOf(prefix)
+            if (i >= 0) line.substring(i + prefix.length) else null
+        } ?: return null
+        val bytes = hex.chunked(2).mapNotNull { it.takeIf { c -> c.length == 2 }?.toIntOrNull(16) }.toIntArray()
+        return pid.decode(bytes)
+    }
+
+    /** Re-reads the custom sensors saved for the active vehicle (after editing or switching vehicles). */
+    fun refreshCustom() {
+        val keys = CustomPids.refresh(appContext).map { it.key }.toSet()
+        deadPids.removeAll { it.startsWith("X") }
+        if (state == State.CONNECTED) supported = supported.filterNot { it.startsWith("X") }.toSet() + keys
+    }
+
+    /** Sends a command typed by the user and returns the adapter's raw reply. */
+    suspend fun sendRaw(cmd: String): String? {
+        val text = cmd.trim().uppercase()
+        if (text.isEmpty()) return null
+        if (demo) return demoRaw(text)
+        if (state != State.CONNECTED) return null
+        val r = command(text, 8000, clean = false)
+        if (text.startsWith("AT")) {
+            // The user may have changed the header or protocol; make the next normal request set it again
+            header = ""
+            if (text.startsWith("ATSH")) customHeaderActive = true
+        }
+        return r
+    }
+
+    private fun demoRaw(c: String): String = when {
+        c == "ATZ" -> "ELM327 v1.5 (demo)"
+        c == "ATRV" -> "14.1V"
+        c == "ATDPN" -> "A6"
+        c.startsWith("AT") -> "OK"
+        c == "010C" -> "41 0C 1A F8"
+        c == "010D" -> "41 0D 3C"
+        c == "0105" -> "41 05 7B"
+        else -> "NO DATA"
+    }
+
     /** Reads the VIN (mode 09, PID 02) and keeps it for the profile matcher. */
     private suspend fun readVin() {
         vinNote = null
-        if (!setHeader(GmPids.HEADER_FUNCTIONAL)) header = ""
+        if (!stdHeader(false)) header = ""
         var found: String? = null
         for (attempt in 0 until 2) {
             val r = command("0902", 6000)
@@ -929,14 +1062,17 @@ class ObdManager(context: Context) {
         if (demo) {
             storedCodes = demoCodes
             pendingCodes = demoPending
+            permanentCodes = emptyList()
             codesNote = null
             return
         }
         scope.launch {
             codesBusy = true
             codesNote = null
+            if (!stdHeader(false)) header = ""
             storedCodes = fetchCodes("03", "43")
             pendingCodes = fetchCodes("07", "47")
+            permanentCodes = fetchCodes("0A", "4A")
             if (storedCodes == null) codesNote = "The car didn't answer. Is the ignition on?"
             codesBusy = false
         }
@@ -959,9 +1095,55 @@ class ObdManager(context: Context) {
             delay(800)
             storedCodes = fetchCodes("03", "43")
             pendingCodes = fetchCodes("07", "47")
+            permanentCodes = fetchCodes("0A", "4A")
+            freezeFrame = null
+            freezeCode = null
             codesNote = if (ok) "Codes cleared." else
                 "The car didn't confirm the clear. Try with the ignition on and the engine off."
             codesBusy = false
+        }
+    }
+
+    /** Mode 02: the snapshot the car took when the fault happened. */
+    fun readFreezeFrame() {
+        if (state != State.CONNECTED || freezeBusy) return
+        if (demo) {
+            freezeCode = demoCodes.firstOrNull()
+            freezeFrame = if (freezeCode == null) null else mapOf(
+                "0C" to 2150f, "0D" to 72f, "05" to 88f, "06" to 1.6f, "07" to 3.1f, "04" to 46f,
+            )
+            freezeNote = if (freezeCode == null) "No freeze frame stored." else null
+            return
+        }
+        scope.launch {
+            freezeBusy = true
+            freezeNote = null
+            freezeFrame = null
+            freezeCode = null
+            if (!stdHeader(false)) header = ""
+            val dtcResp = command("020200", 4000)
+            val dhex = dtcResp?.lines()?.firstNotNullOfOrNull { l ->
+                val i = l.indexOf("420200")
+                if (i >= 0) l.substring(i + 6) else null
+            }
+            if (dhex != null && dhex.length >= 4 && dhex.take(4) != "0000") freezeCode = dtc(dhex.take(4))
+            val out = LinkedHashMap<String, Float>()
+            for (key in listOf("0C", "0D", "05", "06", "07", "04", "11", "0B")) {
+                val r = command("02${key}00", 3000) ?: continue
+                val prefix = "42${key}00"
+                val hex = r.lines().firstNotNullOfOrNull { l ->
+                    val i = l.indexOf(prefix)
+                    if (i >= 0) l.substring(i + prefix.length) else null
+                } ?: continue
+                val bytes = hex.chunked(2).mapNotNull { it.takeIf { c -> c.length == 2 }?.toIntOrNull(16) }.toIntArray()
+                ObdPids[key]?.decode?.invoke(bytes)?.let { out[key] = it }
+            }
+            if (out.isEmpty()) {
+                freezeNote = "No freeze frame stored. The car only saves one when a fault sets a code."
+            } else {
+                freezeFrame = out
+            }
+            freezeBusy = false
         }
     }
 
@@ -1000,9 +1182,7 @@ class ObdManager(context: Context) {
 
     fun setGauge(index: Int, slot: GaugeSlot) {
         gauges = gauges.toMutableList().also { if (index in it.indices) it[index] = slot }
-        val arr = JSONArray()
-        gauges.forEach { arr.put(JSONObject().put("pid", it.pid).put("name", it.name)) }
-        prefs.edit().putString("gauges", arr.toString()).apply()
+        saveGauges()
     }
 
     private fun loadGauges(): List<GaugeSlot> {
@@ -1010,15 +1190,44 @@ class ObdManager(context: Context) {
             val arr = JSONArray(prefs.getString("gauges", "[]"))
             (0 until arr.length()).map {
                 val o = arr.getJSONObject(it)
-                GaugeSlot(o.getString("pid"), o.getString("name"))
+                val style = runCatching { GaugeKind.valueOf(o.optString("style", "RADIAL")) }.getOrDefault(GaugeKind.RADIAL)
+                GaugeSlot(o.getString("pid"), o.getString("name"), style)
             }
         }.getOrDefault(emptyList())
-        if (saved.size == DEFAULT_GAUGES.size) return saved
+        if (saved.isNotEmpty()) return saved
         return DEFAULT_GAUGES.map { GaugeSlot(it, ObdPids[it]?.name.orEmpty()) }
+    }
+
+    private fun saveGauges() {
+        val arr = JSONArray()
+        gauges.forEach { arr.put(JSONObject().put("pid", it.pid).put("name", it.name).put("style", it.style.name)) }
+        prefs.edit().putString("gauges", arr.toString()).apply()
+    }
+
+    fun replaceGauges(list: List<GaugeSlot>) {
+        gauges = list.take(MAX_GAUGES)
+        saveGauges()
+    }
+
+    fun addGauge(slot: GaugeSlot) {
+        if (gauges.size < MAX_GAUGES) replaceGauges(gauges + slot)
+    }
+
+    fun removeGauge(index: Int) {
+        if (gauges.size > 1 && index in gauges.indices) replaceGauges(gauges.filterIndexed { i, _ -> i != index })
+    }
+
+    fun moveGauge(index: Int, delta: Int) {
+        val to = index + delta
+        if (index !in gauges.indices || to !in gauges.indices) return
+        val list = gauges.toMutableList()
+        list.add(to, list.removeAt(index))
+        replaceGauges(list)
     }
 
     companion object {
         private const val HISTORY = 120
+        const val MAX_GAUGES = 12
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private val DEMO_PIDS = setOf(
             "0C", "0D", "11", "04", "0B", "0E", "05", "0F", "ATRV", "06", "07", "14", "15", "2F", "33", "46",

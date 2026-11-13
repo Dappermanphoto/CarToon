@@ -34,6 +34,7 @@ object DtcDescriptions {
             else -> "Unknown"
         }
         val generic = c.getOrNull(1) == '0' || c.getOrNull(1) == '2' || (c.getOrNull(1) == '3' && c[0] != 'P')
+        DtcDictionary.get(c)?.let { return it.copy(system = system) }
         val known = exact(c) ?: pattern(c)
         if (known != null) {
             return DtcInfo(c, known.first, system, known.second, known.third, generic)
@@ -202,4 +203,31 @@ object DtcDescriptions {
     }
 
     private fun t(title: String, severity: DtcSeverity, advice: String) = Triple(title, severity, advice)
+}
+
+/** Bundled GM manufacturer-specific (P1xxx) codes from assets/dtc_gm.json: code, description, likely cause. */
+object DtcDictionary {
+    private var map: Map<String, DtcInfo> = emptyMap()
+    private var loaded = false
+
+    @Synchronized
+    fun init(context: android.content.Context) {
+        if (loaded) return
+        loaded = true
+        map = runCatching {
+            val text = context.applicationContext.assets.open("dtc_gm.json").bufferedReader().use { it.readText() }
+            val arr = org.json.JSONArray(text)
+            (0 until arr.length()).associate { i ->
+                val o = arr.getJSONObject(i)
+                val code = o.getString("code").trim().uppercase()
+                code to DtcInfo(
+                    code, o.getString("description"), "Powertrain", DtcSeverity.SOON,
+                    "Likely cause: " + o.optString("likely_cause") + " (GM-specific code; meaning can differ on other brands.)",
+                    false,
+                )
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun get(code: String): DtcInfo? = map[code.trim().uppercase()]
 }

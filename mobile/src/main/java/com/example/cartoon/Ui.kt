@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -267,19 +268,24 @@ fun Pill(
     val pressed by source.collectIsPressedAsState()
     val press by animateFloatAsState(if (pressed) 0.93f else 1f, label = "pillPress")
     val fill by animateColorAsState(if (selected) color else color.copy(alpha = 0.14f), label = "pillFill")
-    Text(
-        text,
-        fontSize = ui.small,
-        fontWeight = FontWeight.SemiBold,
-        color = if (selected) cs.onPrimary else color,
-        maxLines = 1,
-        modifier = Modifier
+    Box(
+        Modifier
             .graphicsLayer { scaleX = press; scaleY = press }
+            .heightIn(min = if (ui.car) 48.dp else 0.dp)
             .clip(RoundedCornerShape(50))
             .background(fill)
             .then(if (onClick != null) Modifier.clickable(interactionSource = source, indication = null, onClick = onClick) else Modifier)
             .padding(horizontal = if (ui.short) 12.dp else 14.dp, vertical = if (ui.short) 6.dp else 7.dp),
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            fontSize = ui.small,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) cs.onPrimary else color,
+            maxLines = 1,
+        )
+    }
 }
 
 @Composable

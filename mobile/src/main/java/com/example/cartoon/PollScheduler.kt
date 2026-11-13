@@ -28,7 +28,7 @@ class PollScheduler(context: Context, private val obd: ObdManager) {
         private set
     var mediumEvery by mutableIntStateOf(prefs.getInt("medium_every", 3))
         private set
-    var slowEvery by mutableIntStateOf(prefs.getInt("slow_every", 10))
+    var slowEvery by mutableIntStateOf(prefs.getInt("slow_every", 7))
         private set
 
     private var wanted: Set<String> = emptySet()
@@ -91,8 +91,8 @@ class PollScheduler(context: Context, private val obd: ObdManager) {
     }
 
     companion object {
-        private val FAST = setOf("0C", "0D", "11", "04", "0B", "0E", "10", "14", "ATRV")
-        private val SLOW = setOf("05", "0F", "2F", "33", "46", "5C", "07", "09", "42")
+        private val FAST = setOf("0C", "0D", "11", "04", "0B", "0E", "10", "14", "G11A6")
+        private val SLOW = setOf("05", "0F", "2F", "33", "46", "5C", "07", "09", "G1940", "G12C5")
 
         fun tierOf(key: String): Tier = when (key) {
             in FAST -> Tier.FAST

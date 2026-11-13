@@ -105,6 +105,8 @@ data class Trip(
     val maxCoolant: Float?,
     val minVolts: Float?,
     val vehicle: String,
+    val maxTrans: Float? = null,
+    val fuelL: Float = 0f,
 )
 
 /**
@@ -153,6 +155,8 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
     private var stoppedSec = 0f
     private var maxCoolant: Float? = null
     private var minVolts: Float? = null
+    private var maxTrans: Float? = null
+    private var fuelL = 0f
 
     fun start(scope: CoroutineScope) {
         scheduler.require("trips", if (enabled) PIDS else emptySet())
@@ -170,6 +174,7 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
             start = startAt, end = end, km = km, maxKmh = maxKmh,
             avgKmh = km / (moving / 3600f), idleSec = idleSec.toInt(),
             maxCoolant = maxCoolant, minVolts = minVolts, vehicle = Vehicles.activeId(app),
+            maxTrans = maxTrans, fuelL = fuelL,
         )
     }
 
@@ -188,7 +193,7 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
                 startAt = System.currentTimeMillis()
                 lastAt = now
                 km = 0f; maxKmh = 0f; movingSec = 0f; idleSec = 0f; stoppedSec = 0f
-                maxCoolant = null; minVolts = null
+                maxCoolant = null; minVolts = null; maxTrans = null; fuelL = 0f
             }
             return
         }
@@ -203,6 +208,8 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
             stoppedSec += dt
             if (rpm > 400f) idleSec += dt
         }
+        FuelEstimator.litersPerSecond(obd.values, FuelEstimator.displacement(app, obd))?.let { fuelL += it * dt }
+        obd.values["G1940"]?.let { if (maxTrans == null || it > maxTrans!!) maxTrans = it }
         obd.values["05"]?.let { if (maxCoolant == null || it > maxCoolant!!) maxCoolant = it }
         obd.values["ATRV"]?.let { if (it > 5f && (minVolts == null || it < minVolts!!)) minVolts = it }
         live = snapshot(System.currentTimeMillis())
@@ -231,6 +238,8 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
                 maxCoolant = if (o.has("coolant")) o.getDouble("coolant").toFloat() else null,
                 minVolts = if (o.has("volts")) o.getDouble("volts").toFloat() else null,
                 vehicle = o.optString("vehicle", Vehicles.FIRST),
+                maxTrans = if (o.has("trans")) o.getDouble("trans").toFloat() else null,
+                fuelL = o.optDouble("fuel", 0.0).toFloat(),
             )
         }
     }.getOrDefault(emptyList())
@@ -244,6 +253,8 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
                     .apply {
                         t.maxCoolant?.let { put("coolant", it.toDouble()) }
                         t.minVolts?.let { put("volts", it.toDouble()) }
+                        t.maxTrans?.let { put("trans", it.toDouble()) }
+                        put("fuel", t.fuelL.toDouble())
                     }
                     .put("vehicle", t.vehicle)
             )
@@ -252,7 +263,7 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
     }
 
     companion object {
-        private val PIDS = setOf("0D", "0C", "05", "ATRV")
+        private val PIDS = setOf("0D", "0C", "05", "ATRV", "G1940", "10", "0B", "0F")
 
         /** Spreadsheet-friendly export. */
         fun csv(trips: List<Trip>, metric: Boolean): String {
@@ -260,7 +271,7 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
             val dist = if (metric) "km" else "mi"
             val spd = if (metric) "kmh" else "mph"
             val temp = if (metric) "C" else "F"
-            val sb = StringBuilder("start,minutes,distance_$dist,avg_$spd,max_$spd,idle_min,max_coolant_$temp,min_volts\n")
+            val sb = StringBuilder("start,minutes,distance_$dist,avg_$spd,max_$spd,idle_min,max_coolant_$temp,max_trans_$temp,fuel_${if (metric) "L" else "gal"},mpg\n")
             trips.forEach { t ->
                 val k = if (metric) 1f else 0.621371f
                 sb.append(df.format(java.util.Date(t.start))).append(',')
@@ -270,7 +281,9 @@ class TripLog(context: Context, private val obd: ObdManager, private val schedul
                     .append("%.0f".format(Locale.US, t.maxKmh * k)).append(',')
                     .append("%.0f".format(t.idleSec / 60f)).append(',')
                     .append(t.maxCoolant?.let { "%.0f".format(Locale.US, if (metric) it else it * 9f / 5f + 32f) } ?: "").append(',')
-                    .append(t.minVolts?.let { "%.1f".format(Locale.US, it) } ?: "").append('\n')
+                    .append(t.maxTrans?.let { "%.0f".format(Locale.US, if (metric) it else it * 9f / 5f + 32f) } ?: "").append(',')
+                    .append(if (t.fuelL > 0f) "%.2f".format(Locale.US, if (metric) t.fuelL else t.fuelL * 0.264172f) else "").append(',')
+                    .append(if (t.fuelL > 0.01f && t.km > 0.1f) "%.1f".format(Locale.US, if (metric) t.fuelL / t.km * 100f else 235.215f / (t.fuelL / t.km * 100f)) else "").append('\n')
             }
             return sb.toString()
         }

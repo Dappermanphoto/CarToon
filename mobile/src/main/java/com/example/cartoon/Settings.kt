@@ -10,7 +10,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
-enum class ThemeMode(val label: String) { DYNAMIC("Wallpaper"), NIGHT("Night"), DAY("Day"), CUSTOM("Custom") }
+enum class ThemeMode(val label: String) { DYNAMIC("Wallpaper"), NIGHT("Night"), DAY("Day"), CUSTOM("Custom"), RED("Night red") }
 
 /** Soft, dark gradients for Custom mode. */
 enum class GradientPreset(val label: String, val colors: List<Color>) {
@@ -152,6 +152,25 @@ fun AppSettings.toTheme(context: Context? = null): AppTheme = when (themeMode) {
         ),
         background = Brush.linearGradient(listOf(Color(0xFFFFF3E3), Color(0xFFF1F4FA), Color(0xFFE3F0F4))),
         isDark = false,
+    )
+
+    // High-contrast, all-red-on-black palette that keeps night vision (and doesn't glare on a dark road)
+    ThemeMode.RED -> AppTheme(
+        colors = darkColorScheme(
+            primary = Color(0xFFFF4D4D),
+            onPrimary = Color(0xFF000000),
+            secondary = Color(0xFFFF8A80),
+            onSecondary = Color(0xFF000000),
+            background = Color(0xFF000000),
+            onBackground = Color(0xFFFF6B6B),
+            surface = Color(0xFF140000),
+            onSurface = Color(0xFFFF6B6B),
+            surfaceVariant = Color(0xFF260404),
+            onSurfaceVariant = Color(0xFFC24A4A),
+            outline = Color(0xFF5A1010),
+        ),
+        background = Brush.verticalGradient(listOf(Color(0xFF000000), Color(0xFF000000))),
+        isDark = true,
     )
 
     ThemeMode.CUSTOM -> AppTheme(

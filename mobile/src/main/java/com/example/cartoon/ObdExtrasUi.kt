@@ -59,7 +59,7 @@ internal fun shareTextOnPhone(context: Context, text: String, subject: String): 
 }
 
 @Composable
-private fun InfoCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+internal fun InfoCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Box(
         modifier
@@ -110,6 +110,18 @@ fun SmogView(obd: ObdManager) {
         }
         Spacer(Modifier.height(12.dp))
         if (m != null) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmogBadges.of(m).forEach { (label, r) ->
+                    val c = when (r) { Readiness.READY -> ReadyGreen; Readiness.NOT_READY -> ReadyAmber; Readiness.NA -> cs.onSurfaceVariant }
+                    Column(
+                        Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(c.copy(alpha = 0.16f)).padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(label, fontSize = ui.small, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(r.label, fontSize = ui.small, fontWeight = FontWeight.Bold, color = c, maxLines = 1)
+                    }
+                }
+            }
             m.monitors.forEach { mon ->
                 InfoCard(Modifier.padding(bottom = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -202,6 +214,8 @@ fun TripsView(log: TripLog, metric: Boolean) {
                         "Idle ${t.idleSec / 60} min",
                         t.maxCoolant?.let { "Hottest %.0f %s".format(if (metric) it else it * 9f / 5f + 32f, if (metric) "°C" else "°F") },
                         t.minVolts?.let { "Lowest %.1f V".format(it) },
+                        t.maxTrans?.let { "Trans %.0f %s".format(if (metric) it else it * 9f / 5f + 32f, if (metric) "°C" else "°F") },
+                        if (t.fuelL > 0.01f && t.km > 0.1f) (if (metric) "%.1f L/100km".format(t.fuelL / t.km * 100f) else "%.1f mpg".format(235.215f / (t.fuelL / t.km * 100f))) else null,
                     ).joinToString(" · ")
                     Text(extras, fontSize = ui.small, color = cs.onSurfaceVariant)
                 }
