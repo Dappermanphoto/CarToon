@@ -23,3 +23,10 @@ local.properties
 keystore.properties
 *.jks
 *.keystore
+
+# Helper logs
+build-log.txt
+build-status.txt
+install-log.txt
+crash-log.txt
+crash-done.txt

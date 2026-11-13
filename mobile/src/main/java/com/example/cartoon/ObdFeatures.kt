@@ -4,7 +4,18 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.SystemClock
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -25,6 +36,13 @@ object Vehicles {
     fun activeId(context: Context): String =
         context.applicationContext.getSharedPreferences("cartoon_profile", Context.MODE_PRIVATE)
             .getString("active", FIRST) ?: FIRST
+
+    /** The special profile (such as the S-10) bound to the active vehicle, or "". */
+    fun presetFor(context: Context): String {
+        val prefs = context.applicationContext.getSharedPreferences("cartoon_profile", Context.MODE_PRIVATE)
+        val id = activeId(context)
+        return prefs.getString(if (id == FIRST) "PRESET" else "${id}_PRESET", "").orEmpty()
+    }
 }
 
 /* ------------------------------ Smog readiness ------------------------------ */
@@ -391,4 +409,114 @@ class AlertMonitor(
         }
         tone.release()
     }
+}
+
+
+/* ------------------------------ Live mileage and service banner ------------------------------ */
+
+/**
+ * Keeps each vehicle's odometer up to date while the adapter is connected. It uses the car's own
+ * odometer (PID A6) when it reports one, otherwise it adds up speed over time. It also raises a
+ * banner when a service reminder crosses into "due soon" or "overdue".
+ */
+@Stable
+class OdometerTracker(context: Context, private val obd: ObdManager, private val scheduler: PollScheduler) {
+    private val app = context.applicationContext
+    private val store = MaintenanceStore(app)
+    private val settings = app.getSharedPreferences("cartoon_settings", Context.MODE_PRIVATE)
+
+    /** Text for the in-app banner, or null. */
+    var banner by mutableStateOf<String?>(null)
+        private set
+
+    fun dismiss() { banner = null }
+
+    private var lastAt = 0L
+    private var pending = 0f
+    private var lastFlush = 0L
+    private var baseOdoKm: Float? = null
+    private var baseStored = 0f
+
+    private fun metric() = settings.getBoolean("metric_units", false)
+    private fun vehicle() = if (obd.inDemo) "demo" else Vehicles.activeId(app)
+
+    fun start(scope: CoroutineScope) {
+        scheduler.require("odometer", setOf("0D", "A6"))
+        scope.launch {
+            while (true) {
+                delay(1000)
+                tick()
+            }
+        }
+    }
+
+    private fun tick() {
+        val now = SystemClock.elapsedRealtime()
+        val connected = obd.state == ObdManager.State.CONNECTED
+        val v = vehicle()
+        if (!connected) {
+            lastAt = 0L
+            baseOdoKm = null
+        } else {
+            val dt = if (lastAt == 0L) 0f else ((now - lastAt) / 1000f).coerceIn(0f, 5f)
+            lastAt = now
+            val metric = metric()
+            val carOdo = obd.values["A6"]
+            if (carOdo != null && "A6" in obd.supported && !obd.inDemo) {
+                // The car's own odometer wins. Follow its changes on top of what the user entered.
+                val base = baseOdoKm ?: carOdo.also {
+                    baseOdoKm = it
+                    baseStored = store.odometerExact(v)
+                }
+                val driven = (carOdo - base).coerceAtLeast(0f) * (if (metric) 1f else 0.621371f)
+                val target = baseStored + driven
+                val delta = target - store.odometerExact(v)
+                if (delta > 0.05f) pending += delta
+            } else {
+                val speed = obd.values["0D"] ?: 0f // km/h
+                val scale = if (obd.inDemo) 60f else 1f // demo drives 60 times faster than real time
+                val dist = speed * dt / 3600f * scale * (if (metric) 1f else 0.621371f)
+                pending += dist
+            }
+            if (pending > 0f && now - lastFlush > 5000) {
+                store.addDistance(v, pending)
+                pending = 0f
+                lastFlush = now
+            }
+        }
+        checkService(v)
+    }
+
+    private fun checkService(v: String) {
+        val unit = if (metric()) "km" else "mi"
+        val odo = store.odometer(v)
+        val done = store.alerted(v)
+        for (item in store.items(v)) {
+            val d = MaintenanceStore.due(item, odo, unit)
+            val status = if (d.overdue) "over" else if (d.soon) "soon" else continue
+            val key = "${item.id}@${item.lastDist}@$status"
+            if (key in done) continue
+            store.markAlerted(v, key)
+            banner = if (status == "over") "${item.name} is overdue (${d.text})" else "${item.name} is due soon (${d.text})"
+        }
+    }
+}
+
+/** Shown over the app when a service reminder is crossed. Tap to dismiss. */
+@Composable
+fun ServiceBanner(tracker: OdometerTracker, modifier: Modifier = Modifier) {
+    val text = tracker.banner ?: return
+    val ui = LocalUi.current
+    Text(
+        "Service: $text  \u2715",
+        fontSize = ui.small,
+        fontWeight = FontWeight.Bold,
+        color = Color.Black,
+        modifier = modifier
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(50))
+            .background(Color(0xFFFFB547))
+            .clickable { tracker.dismiss() }
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+    )
 }

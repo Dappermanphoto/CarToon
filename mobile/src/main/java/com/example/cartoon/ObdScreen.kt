@@ -123,7 +123,9 @@ fun ObdScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     BigButton("Open Settings", onOpenSettings)
                     Spacer(Modifier.width(10.dp))
-                    Pill("Try the demo car", color = cs.onSurfaceVariant, onClick = { obd.startDemo() })
+                    Pill("Demo: Honda Accord", color = cs.onSurfaceVariant, onClick = { obd.startDemo() })
+                    Spacer(Modifier.width(8.dp))
+                    Pill("Demo: 2001 S-10 LS", color = cs.onSurfaceVariant, onClick = { obd.startDemoS10() })
                 }
             }
 
@@ -136,7 +138,14 @@ fun ObdScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     BigButton(if (obd.message == null) "Connect" else "Try again", connect)
                     Spacer(Modifier.width(10.dp))
-                    Pill("Try the demo car", color = cs.onSurfaceVariant, onClick = { obd.startDemo() })
+                    obd.unsupportedAdapter?.let { u ->
+                        val ctx = androidx.compose.ui.platform.LocalContext.current
+                        Pill("Get the ${u.appName} app", selected = true, onClick = { openOnPhone(ctx, u.storeUri) })
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Pill("Demo: Honda Accord", color = cs.onSurfaceVariant, onClick = { obd.startDemo() })
+                    Spacer(Modifier.width(8.dp))
+                    Pill("Demo: 2001 S-10 LS", color = cs.onSurfaceVariant, onClick = { obd.startDemoS10() })
                 }
             }
 
@@ -172,11 +181,15 @@ fun ObdScreen(
                         }
                     }
                     Spacer(Modifier.width(8.dp))
-                    Pill(if (obd.demo) "Exit demo" else "Disconnect", color = cs.onSurfaceVariant, onClick = { obd.disconnect() })
+                    Pill(if (obd.inDemo) "Exit demo" else "Disconnect", color = cs.onSurfaceVariant, onClick = { obd.disconnect() })
                 }
-                if (obd.demo) {
+                if (obd.inDemo) {
                     Spacer(Modifier.height(6.dp))
-                    Text("Demo vehicle: 1994 Honda Accord (simulated data)", fontSize = ui.small, color = cs.primary)
+                    Text("Demo vehicle: ${obd.demoName} (simulated data)", fontSize = ui.small, color = cs.primary)
+                }
+                if (!obd.inDemo) obd.vinNote?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, fontSize = ui.small, color = cs.onSurfaceVariant)
                 }
                 obd.message?.let {
                     Spacer(Modifier.height(6.dp))

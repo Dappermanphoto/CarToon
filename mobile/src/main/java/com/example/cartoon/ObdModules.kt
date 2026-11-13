@@ -20,6 +20,7 @@ class ObdModules(context: Context, val obd: ObdManager) {
     val trips = TripLog(context, obd, scheduler)
     val health = HealthBaseline(context)
     val alerts = AlertMonitor(context, obd, voltage, scheduler)
+    val odometer = OdometerTracker(context, obd, scheduler)
 
     init {
         scheduler.start(scope)
@@ -27,6 +28,7 @@ class ObdModules(context: Context, val obd: ObdManager) {
         parked.start(scope)
         trips.start(scope)
         alerts.start(scope)
+        odometer.start(scope)
     }
 
     fun stop() {

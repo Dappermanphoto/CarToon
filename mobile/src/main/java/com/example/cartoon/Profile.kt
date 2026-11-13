@@ -62,13 +62,19 @@ import java.io.File
 /** Provided at the top of the app so any screen can use the saved vehicle (for example web lookups). */
 val LocalVehicle = staticCompositionLocalOf<ProfileStore?> { null }
 
-enum class ProfileField(val label: String, val example: String, val maxLength: Int, val numeric: Boolean = false) {
+enum class ProfileField(val label: String, val example: String, val maxLength: Int, val numeric: Boolean = false, val hidden: Boolean = false) {
     NAME("Your name", "Name", 30),
     YEAR("Year", "2001", 4, numeric = true),
     MAKE("Make", "Chevrolet", 24),
     MODEL("Model", "S10", 24),
     TRIM("Sub-model / trim", "LS", 24),
     ENGINE("Engine", "4.3L V6", 30),
+    VIN("VIN (17 characters)", "1GCCS14W018123456", 17),
+    FUEL("Fuel", "Gasoline", 20),
+    DRIVE("Drive", "RWD", 20),
+    TRANSMISSION("Transmission", "4-speed automatic", 30),
+    /** Which built-in vehicle profile applies (such as the 2001 S-10). Not shown as a field. */
+    PRESET("Preset", "", 20, hidden = true),
 }
 
 /** The driver and their vehicles, saved on the phone. Several vehicles can be saved; one is active. */
@@ -104,7 +110,13 @@ class ProfileStore(context: Context) {
     operator fun get(field: ProfileField): String = fields.getValue(field).value
 
     operator fun set(field: ProfileField, value: String) {
-        val clean = value.take(field.maxLength).let { if (field.numeric) it.filter(Char::isDigit) else it }
+        val clean = value.take(field.maxLength).let {
+            when {
+                field.numeric -> it.filter(Char::isDigit)
+                field == ProfileField.VIN -> it.uppercase().filter { c -> c.isLetterOrDigit() }
+                else -> it
+            }
+        }
         fields.getValue(field).value = clean
         prefs.edit().putString(key(activeId, field.name), clean.trim()).apply()
     }
@@ -131,6 +143,7 @@ class ProfileStore(context: Context) {
         prefs.edit().putInt("photo_v", photoVersion).apply()
     }
 
+    /** Switches to a saved vehicle; returns true when the active vehicle changed. */
     fun select(id: String) {
         if (id !in vehicleIds || id == activeId) return
         activeId = id
@@ -138,13 +151,57 @@ class ProfileStore(context: Context) {
         reloadFields()
     }
 
-    fun addVehicle() {
-        if (vehicleIds.size >= 6) return
+    fun addVehicle(): String? {
+        if (vehicleIds.size >= 6) return null
         val id = "v" + (System.currentTimeMillis() % 1_000_000_000L)
         vehicleIds = vehicleIds + id
         saveIds()
         select(id)
+        return id
     }
+
+    /** Adds a vehicle pre-filled as the 2001 Chevrolet S-10 LS (4.3L V6, 0411 PCM). */
+    fun addS10Template() {
+        if (addVehicle() == null) return
+        this[ProfileField.YEAR] = "2001"
+        this[ProfileField.MAKE] = "Chevrolet"
+        this[ProfileField.MODEL] = "S-10"
+        this[ProfileField.TRIM] = "LS"
+        this[ProfileField.ENGINE] = "4.3L V6"
+        this[ProfileField.FUEL] = "Gasoline"
+        this[ProfileField.DRIVE] = "RWD"
+        this[ProfileField.TRANSMISSION] = "4-speed automatic"
+        this[ProfileField.PRESET] = GmPids.PRESET_S10
+    }
+
+    /** The saved vehicle that has this VIN, if any. */
+    fun findByVin(vin: String): String? =
+        vehicleIds.firstOrNull { prefs.getString(key(it, ProfileField.VIN.name), "").orEmpty().equals(vin, true) }
+
+    /** Fills in the VIN and any blank detail of the active vehicle. Existing entries are kept. */
+    fun fillFrom(vin: String, info: VinInfo) {
+        this[ProfileField.VIN] = vin
+        fun blank(f: ProfileField, v: String) { if (this[f].isBlank() && v.isNotBlank()) this[f] = v }
+        blank(ProfileField.YEAR, info.year)
+        blank(ProfileField.MAKE, info.make)
+        blank(ProfileField.MODEL, info.model)
+        blank(ProfileField.TRIM, info.trim)
+        blank(ProfileField.ENGINE, info.engine)
+        blank(ProfileField.FUEL, info.fuel)
+        blank(ProfileField.DRIVE, info.drive)
+        blank(ProfileField.TRANSMISSION, info.transmission)
+        if (Vin.isS10Preset(info) && this[ProfileField.PRESET].isBlank()) this[ProfileField.PRESET] = GmPids.PRESET_S10
+    }
+
+    /** Creates a vehicle for a VIN the app hasn't seen and makes it the active one. */
+    fun createForVin(vin: String, info: VinInfo): Boolean {
+        if (addVehicle() == null) return false
+        fillFrom(vin, info)
+        return true
+    }
+
+    /** True if the active vehicle uses the S-10 profile. */
+    val isS10: Boolean get() = this[ProfileField.PRESET] == GmPids.PRESET_S10
 
     /** Removes the active vehicle (never the last one) and its photo. */
     fun removeActive() {
@@ -202,7 +259,7 @@ val PersonIcon: ImageVector by lazy {
 /* ------------------------------ Screen ------------------------------ */
 
 @Composable
-fun ProfileScreen(store: ProfileStore, metric: Boolean = false) {
+fun ProfileScreen(store: ProfileStore, metric: Boolean = false, demo: Boolean = false) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
@@ -212,6 +269,8 @@ fun ProfileScreen(store: ProfileStore, metric: Boolean = false) {
     var editing by remember { mutableStateOf<ProfileField?>(null) }
     var photoNote by remember { mutableStateOf<String?>(null) }
     var confirmRemove by remember { mutableStateOf(false) }
+    var decoding by remember { mutableStateOf(false) }
+    var vinNote by remember { mutableStateOf<String?>(null) }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -265,9 +324,36 @@ fun ProfileScreen(store: ProfileStore, metric: Boolean = false) {
             }
             Spacer(Modifier.height(10.dp))
             ProfileInput(store, ProfileField.ENGINE, ui.car) { editing = it }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ProfileInput(store, ProfileField.FUEL, ui.car, Modifier.weight(1f)) { editing = it }
+                ProfileInput(store, ProfileField.DRIVE, ui.car, Modifier.weight(1f)) { editing = it }
+            }
+            Spacer(Modifier.height(10.dp))
+            ProfileInput(store, ProfileField.TRANSMISSION, ui.car) { editing = it }
+            Spacer(Modifier.height(10.dp))
+            ProfileInput(store, ProfileField.VIN, ui.car) { editing = it }
+            val vinText = store[ProfileField.VIN]
+            if (vinText.length == 17 && !ui.car) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Pill(if (decoding) "Decoding…" else "Decode VIN", selected = true, onClick = {
+                        if (!decoding) {
+                            decoding = true
+                            scope.launch {
+                                val info = Vin.decode(vinText)
+                                store.fillFrom(vinText, info)
+                                vinNote = if (info.summary().isBlank()) "Couldn't decode that VIN." else "Filled in: ${info.summary()}"
+                                decoding = false
+                            }
+                        }
+                    })
+                    vinNote?.let { Text(it, fontSize = ui.small, color = cs.primary) }
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Saved on this phone only. Used for code lookups in the OBD Codes tab.",
+                "Saved on this phone only. Used for code lookups in the OBD Codes tab. Connect the OBD adapter and CarToon reads the VIN for you.",
                 fontSize = ui.small,
                 color = cs.onSurfaceVariant,
             )
@@ -291,7 +377,10 @@ fun ProfileScreen(store: ProfileStore, metric: Boolean = false) {
             store.vehicleIds.forEach { id ->
                 Pill(store.labelFor(id), selected = id == store.activeId, onClick = { store.select(id) })
             }
-            if (store.vehicleIds.size < 6) Pill("+ Add vehicle", color = cs.onSurfaceVariant, onClick = { store.addVehicle() })
+            if (store.vehicleIds.size < 6) {
+                Pill("+ Add vehicle", color = cs.onSurfaceVariant, onClick = { store.addVehicle() })
+                Pill("+ 2001 Chevy S-10 LS", color = cs.onSurfaceVariant, onClick = { store.addS10Template() })
+            }
             if (store.vehicleIds.size > 1) {
                 if (confirmRemove) {
                     Pill("Remove this vehicle?", selected = true, onClick = { store.removeActive(); confirmRemove = false })
@@ -313,7 +402,7 @@ fun ProfileScreen(store: ProfileStore, metric: Boolean = false) {
             form(Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(24.dp))
-        MaintenanceSection(store, metric)
+        MaintenanceSection(store, metric, demo)
         Spacer(Modifier.height(24.dp))
     }
 }

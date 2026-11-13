@@ -72,7 +72,7 @@ fun DtcHubScreen(obd: ObdManager) {
 
     val stored = obd.storedCodes
     val pending = obd.pendingCodes
-    val vehicle = if (obd.demo) "1994 Honda Accord" else LocalVehicle.current?.vehicleName().orEmpty()
+    val vehicle = if (obd.inDemo) obd.demoName else LocalVehicle.current?.vehicleName().orEmpty()
 
     if (confirmClear) {
         ClearConfirm(
@@ -122,7 +122,7 @@ fun DtcHubScreen(obd: ObdManager) {
                 if (lastRead > 0) {
                     Text(
                         "Last read " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(lastRead)) +
-                            if (obd.demo) " · demo car" else "",
+                            if (obd.inDemo) " · demo car" else "",
                         fontSize = ui.small,
                         color = cs.onSurfaceVariant,
                     )

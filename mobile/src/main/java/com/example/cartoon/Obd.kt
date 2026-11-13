@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothSocket
 import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -29,6 +30,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -112,14 +115,18 @@ object ObdPids {
         temp("5C", "Oil temp", 150f),
         pressure("33", "Barometric pressure", 255f),
         temp("46", "Outside temp", 60f),
-    )
+        // Odometer, on newer cars only (the 2001 S-10 doesn't have it). 0.1 km per bit.
+        ObdPid("A6", "Odometer", "km", 0f, 500000f, usUnit = "mi", usMax = 310000f, toUs = { it * 0.621371f }) { b ->
+            if (b.size >= 4) ((b[0].toLong() shl 24) or (b[1].toLong() shl 16) or (b[2].toLong() shl 8) or b[3].toLong()) / 10f else null
+        },
+    ) + GmPids.all
     private val byKey = all.associateBy { it.key }
     operator fun get(key: String): ObdPid? = byKey[key]
 }
 
 data class GaugeSlot(val pid: String, val name: String)
 
-data class ObdDevice(val name: String, val address: String)
+data class ObdDevice(val name: String, val address: String, val classic: Boolean = false)
 
 /* ------------------------------ Connection ------------------------------ */
 
@@ -193,6 +200,25 @@ class ObdManager(context: Context) {
     var scanning by mutableStateOf(false)
         private set
 
+    /** Set when the chosen adapter is a brand that only works with its own app. */
+    var unsupportedAdapter by mutableStateOf<UnsupportedAdapter?>(null)
+    /** The vehicle's VIN, once the car has reported it. */
+    var vin by mutableStateOf<String?>(null)
+    var vinNote by mutableStateOf<String?>(null)
+    /** Name shown while a demo vehicle is running. Empty when no demo is running. */
+    var demoName by mutableStateOf("")
+    val inDemo: Boolean get() = demoName.isNotEmpty()
+
+    private var simulator: S10Simulator? = null
+    private var gmMode = false
+    private var header = ""
+    private val deadPids = HashSet<String>()
+    private val misses = HashMap<String, Int>()
+    private var discovering = false
+    @Volatile private var mtu = 23
+    private var socket: BluetoothSocket? = null
+    private var readJob: Job? = null
+
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
     private val buffer = StringBuilder()
@@ -230,6 +256,13 @@ class ObdManager(context: Context) {
         if (scanning) return
         found.clear()
         message = null
+        // Bluetooth Classic adapters (OBDLink LX/MX+, BAFX) must be paired in Android first
+        runCatching { adapter?.bondedDevices }.getOrNull()?.forEach { d ->
+            val n = d.name
+            if (n != null && d.type != BluetoothDevice.DEVICE_TYPE_LE && AdapterBrands.looksLikeObd(n)) {
+                found += ObdDevice(n, d.address, classic = true)
+            }
+        }
         scanning = true
         runCatching { scanner.startScan(scanCallback) }.onFailure {
             scanning = false
@@ -266,16 +299,39 @@ class ObdManager(context: Context) {
             message = "Pick your OBD adapter again in Settings."
             return
         }
+        val brand = AdapterBrands.detect(runCatching { device.name }.getOrNull())
+        if (brand != null) {
+            unsupportedAdapter = brand
+            message = brand.message
+            return
+        }
+        unsupportedAdapter = null
         stopScan()
         state = State.CONNECTING
         message = null
-        val r = CompletableDeferred<Boolean>()
-        ready = r
-        gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        vin = null
+        vinNote = null
+        deadPids.clear()
+        misses.clear()
+        header = ""
         job = scope.launch {
-            val ok = withTimeoutOrNull(15_000) { r.await() } ?: false
+            // Bluetooth Low Energy first for LE and unknown devices, then Bluetooth Classic (SPP)
+            val order = when (device.type) {
+                BluetoothDevice.DEVICE_TYPE_CLASSIC -> listOf(false)
+                BluetoothDevice.DEVICE_TYPE_LE -> listOf(true)
+                else -> listOf(true, false)
+            }
+            var ok = false
+            for (ble in order) {
+                ok = if (ble) openBle(device) else openSpp(device)
+                if (ok) break
+                closeLink()
+            }
             if (!ok) {
-                fail("Couldn't reach the adapter. Check that it's plugged in and the ignition is on.")
+                fail(
+                    "Couldn't reach the adapter. Check that it's plugged in and the ignition is on. " +
+                        "OBDLink LX/MX+ and BAFX adapters must be paired in Android's Bluetooth settings first."
+                )
                 return@launch
             }
             state = State.STARTING
@@ -284,15 +340,67 @@ class ObdManager(context: Context) {
                 return@launch
             }
             state = State.CONNECTED
+            scope.launch { readVin() }
             pollLoop()
         }
+    }
+
+    private suspend fun openBle(device: BluetoothDevice): Boolean {
+        val r = CompletableDeferred<Boolean>()
+        ready = r
+        discovering = false
+        mtu = 23
+        gatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        return withTimeoutOrNull(15_000) { r.await() } ?: false
+    }
+
+    private suspend fun openSpp(device: BluetoothDevice): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            adapter?.cancelDiscovery()
+            val s = runCatching { device.createRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() } }
+                .getOrElse { device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() } }
+            socket = s
+            val input = s.inputStream
+            readJob = scope.launch(Dispatchers.IO) {
+                val buf = ByteArray(512)
+                while (isActive) {
+                    val n = try { input.read(buf) } catch (e: Exception) { -1 }
+                    if (n < 0) {
+                        scope.launch {
+                            if (state == State.CONNECTED || state == State.STARTING) {
+                                job?.cancel()
+                                fail("The adapter disconnected.")
+                            }
+                        }
+                        break
+                    }
+                    feed(buf.copyOf(n))
+                }
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun writeSpp(s: BluetoothSocket, bytes: ByteArray): Boolean =
+        runCatching { s.outputStream.write(bytes); s.outputStream.flush() }.isSuccess
+
+    /** Closes the Bluetooth link without touching the connection state. */
+    private fun closeLink() {
+        runCatching { gatt?.disconnect() }
+        runCatching { gatt?.close() }
+        gatt = null
+        writeChar = null
+        runCatching { socket?.close() }
+        socket = null
+        readJob?.cancel()
+        readJob = null
     }
 
     fun disconnect() {
         monitors = null
         job?.cancel()
         job = null
-        if (demo) {
+        if (demo || simulator != null) {
             demo = false
             storedCodes = null
             pendingCodes = null
@@ -311,10 +419,9 @@ class ObdManager(context: Context) {
     }
 
     private fun teardown() {
-        runCatching { gatt?.disconnect() }
-        runCatching { gatt?.close() }
-        gatt = null
-        writeChar = null
+        closeLink()
+        simulator = null
+        demoName = ""
         pendingResponse?.cancel()
         pendingResponse = null
         state = State.DISCONNECTED
@@ -323,16 +430,26 @@ class ObdManager(context: Context) {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                g.discoverServices()
+                // Ask for bigger packets first; discovery follows (or starts after a short wait)
+                if (!g.requestMtu(247)) startDiscovery(g)
+                scope.launch {
+                    delay(1500)
+                    startDiscovery(g)
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 ready?.complete(false)
                 scope.launch {
-                    if (g === gatt && state != State.DISCONNECTED) {
+                    if (g === gatt && (state == State.CONNECTED || state == State.STARTING)) {
                         job?.cancel()
                         fail("The adapter disconnected.")
                     }
                 }
             }
+        }
+
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) this@ObdManager.mtu = mtu
+            startDiscovery(g)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
@@ -366,21 +483,32 @@ class ObdManager(context: Context) {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            val done: Pair<CompletableDeferred<String>, String>? = synchronized(buffer) {
-                buffer.append(String(value, Charsets.ISO_8859_1))
-                val end = buffer.indexOf(">")
-                val waiting = pendingResponse
-                if (end >= 0 && waiting != null) {
-                    val text = buffer.substring(0, end)
-                    buffer.setLength(0)
-                    pendingResponse = null
-                    waiting to text
-                } else {
-                    null
-                }
-            }
-            done?.first?.complete(done.second)
+            feed(value)
         }
+    }
+
+    private fun startDiscovery(g: BluetoothGatt) {
+        if (discovering) return
+        discovering = true
+        g.discoverServices()
+    }
+
+    /** Adds bytes from the adapter. A reply is complete when the ">" prompt arrives. */
+    private fun feed(value: ByteArray) {
+        val done: Pair<CompletableDeferred<String>, String>? = synchronized(buffer) {
+            buffer.append(String(value, Charsets.ISO_8859_1))
+            val end = buffer.indexOf(">")
+            val waiting = pendingResponse
+            if (end >= 0 && waiting != null) {
+                val text = buffer.substring(0, end)
+                buffer.setLength(0)
+                pendingResponse = null
+                waiting to text
+            } else {
+                null
+            }
+        }
+        done?.first?.complete(done.second)
     }
 
     /** Finds the adapter's serial-style channel: one characteristic to listen on, one to write to. */
@@ -403,29 +531,51 @@ class ObdManager(context: Context) {
     /* ---------- Adapter commands ---------- */
 
     private suspend fun command(cmd: String, timeoutMs: Long = 2500): String? = mutex.withLock {
+        val sim = simulator
+        val sock = socket
         val g = gatt
         val c = writeChar
-        if (g == null || c == null) {
-            null
-        } else {
-            val d = CompletableDeferred<String>()
-            synchronized(buffer) {
-                buffer.setLength(0)
-                pendingResponse = d
-            }
-            val type = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            } else {
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            }
-            val rc = g.writeCharacteristic(c, (cmd + "\r").toByteArray(Charsets.US_ASCII), type)
-            if (rc != BluetoothStatusCodes.SUCCESS) {
-                delay(60)
-                null
-            } else {
-                withTimeoutOrNull(timeoutMs) { d.await() }?.let { clean(it, cmd) }
-            }
+        if (sim != null) {
+            delay(25)
+            return@withLock clean(sim.respond(cmd), cmd)
         }
+        if (sock == null && (g == null || c == null)) return@withLock null
+        val d = CompletableDeferred<String>()
+        synchronized(buffer) {
+            buffer.setLength(0)
+            pendingResponse = d
+        }
+        val bytes = (cmd + "\r").toByteArray(Charsets.US_ASCII)
+        val sent = if (sock != null) {
+            withContext(Dispatchers.IO) { writeSpp(sock, bytes) }
+        } else if (writeInChunks(g!!, c!!, bytes)) {
+            true
+        } else {
+            false
+        }
+        if (!sent) {
+            delay(60)
+            return@withLock null
+        }
+        withTimeoutOrNull(timeoutMs) { d.await() }?.let { clean(it, cmd) }
+    }
+
+    /** Writes in pieces that fit the negotiated packet size (20 bytes if the adapter never answered). */
+    private suspend fun writeInChunks(g: BluetoothGatt, c: BluetoothGattCharacteristic, bytes: ByteArray): Boolean {
+        val type = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        }
+        val size = (mtu - 3).coerceIn(20, 240)
+        var i = 0
+        while (i < bytes.size) {
+            val part = bytes.copyOfRange(i, minOf(bytes.size, i + size))
+            if (g.writeCharacteristic(c, part, type) != BluetoothStatusCodes.SUCCESS) return false
+            i += size
+            if (i < bytes.size) delay(20)
+        }
+        return true
     }
 
     private fun clean(raw: String, cmd: String): String =
@@ -434,11 +584,35 @@ class ObdManager(context: Context) {
             .filter { it.isNotEmpty() && it != cmd.uppercase() && !it.startsWith("SEARCHING") }
             .joinToString("\n")
 
+    private suspend fun setHeader(h: String): Boolean {
+        if (!gmMode) return true // CAN cars keep their own headers
+        if (h == header) return true
+        val r = command("ATSH$h") ?: return false
+        if (r.contains("?")) return false
+        header = h
+        return true
+    }
+
     private suspend fun initAdapter(): Boolean {
         val hello = command("ATZ", 4000) ?: command("ATZ", 4000) ?: return false
         if (hello.isEmpty()) return false
-        for (c in listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP0")) command(c)
-        loadSupported()
+        header = ""
+        for (c in listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1")) command(c)
+        gmMode = simulator != null || Vehicles.presetFor(appContext) == GmPids.PRESET_S10
+        if (gmMode) {
+            // The 2001 S-10 talks J1850 VPW: try it directly, fall back to automatic
+            command("ATSP2")
+            setHeader(GmPids.HEADER_FUNCTIONAL)
+            loadSupported()
+            if (supported.size <= 1) {
+                command("ATSP0")
+                header = ""
+                loadSupported()
+            }
+        } else {
+            command("ATSP0")
+            loadSupported()
+        }
         return true
     }
 
@@ -446,7 +620,7 @@ class ObdManager(context: Context) {
     private suspend fun loadSupported() {
         val out = HashSet<String>()
         var base = 0
-        while (base <= 0x60) {
+        while (base <= 0xA0) {
             val prefix = "41%02X".format(base)
             val resp = command("01%02X".format(base), if (base == 0) 12_000 else 2500) ?: break
             var mask = 0L
@@ -471,6 +645,10 @@ class ObdManager(context: Context) {
         }
         if (out.isNotEmpty()) {
             protocol = command("ATDPN").orEmpty()
+            if (gmMode) {
+                // J1850 VPW answers show up as protocol 2 (or A2 when it was chosen automatically)
+                out += GmPids.keys.filter { it !in deadPids }
+            }
             out += "ATRV"
             supported = out
             message = null
@@ -486,14 +664,72 @@ class ObdManager(context: Context) {
             return Regex("""\d+(\.\d+)?""").find(r)?.value?.toFloatOrNull()
         }
         val pid = ObdPids[key] ?: return null
-        val r = command("01$key") ?: return null
-        val prefix = "41$key"
+        val gm = GmPids.isGm(key)
+        // Only change the header when it differs from the last one used
+        if (!setHeader(if (gm) GmPids.HEADER_PCM else GmPids.HEADER_FUNCTIONAL)) return null
+        val cmd = if (gm) GmPids.request(key) else "01$key"
+        val r = command(cmd) ?: return null
+        if (gm && r.contains("7F22")) {
+            // The PCM doesn't know this one. Skip it for the rest of the session.
+            deadPids += key
+            supported = supported - key
+            return null
+        }
+        if (gm && (r.contains("NODATA") || r.contains("?"))) {
+            val n = (misses[key] ?: 0) + 1
+            misses[key] = n
+            if (n >= 3) {
+                deadPids += key
+                supported = supported - key
+            }
+            return null
+        }
+        val prefix = if (gm) "62" + key.substring(1) else "41$key"
         val hex = r.lines().firstNotNullOfOrNull { line ->
             val i = line.indexOf(prefix)
             if (i >= 0) line.substring(i + prefix.length) else null
         } ?: return null
         val bytes = hex.chunked(2).mapNotNull { it.takeIf { c -> c.length == 2 }?.toIntOrNull(16) }.toIntArray()
         return pid.decode(bytes)
+    }
+
+    /** Call after the active vehicle changes: turns on the S-10 sensors if that profile is now active. */
+    fun applyProfile() {
+        if (state != State.CONNECTED || simulator != null) return
+        val s10 = Vehicles.presetFor(appContext) == GmPids.PRESET_S10
+        if (s10 && !gmMode) {
+            scope.launch {
+                gmMode = true
+                header = ""
+                command("ATSP2")
+                setHeader(GmPids.HEADER_FUNCTIONAL)
+                loadSupported()
+                if (supported.size <= 1) {
+                    command("ATSP0")
+                    header = ""
+                    loadSupported()
+                }
+            }
+        }
+    }
+
+    /** Reads the VIN (mode 09, PID 02) and keeps it for the profile matcher. */
+    private suspend fun readVin() {
+        vinNote = null
+        if (!setHeader(GmPids.HEADER_FUNCTIONAL)) header = ""
+        var found: String? = null
+        for (attempt in 0 until 2) {
+            val r = command("0902", 6000)
+            if (r == null) break
+            if (r.contains("NODATA") || r.contains("7F09") || r.contains("UNABLE") || r.contains("?")) break
+            found = Vin.parse(r)
+            if (found != null) break
+        }
+        if (found != null) {
+            vin = found
+        } else {
+            vinNote = "This car didn't report a VIN. You can type it in on the Profile tab."
+        }
     }
 
     private suspend fun pollLoop() {
@@ -506,7 +742,7 @@ class ObdManager(context: Context) {
                     continue
                 }
             }
-            val pids = if (polling) activePids.filter { it in supported } else emptyList()
+            val pids = if (polling) activePids.filter { it in supported }.sortedBy { GmPids.isGm(it) } else emptyList()
             if (pids.isEmpty()) {
                 delay(300)
                 continue
@@ -533,6 +769,7 @@ class ObdManager(context: Context) {
         if (state != State.DISCONNECTED) return
         stopScan()
         demo = true
+        demoName = "1994 Honda Accord"
         // A believable set: worn catalytic converter, lean condition, and a one-off misfire.
         demoCodes = listOf("P0420", "P0171")
         demoPending = listOf("P0301")
@@ -545,6 +782,35 @@ class ObdManager(context: Context) {
         codesNote = null
         state = State.CONNECTED
         job = scope.launch { demoLoop() }
+    }
+
+    /** A simulated 2001 Chevy S-10 LS. Raw replies run through the same parser as a real adapter. */
+    fun startDemoS10() {
+        if (state != State.DISCONNECTED) return
+        stopScan()
+        simulator = S10Simulator()
+        demoName = "2001 Chevy S-10 LS"
+        message = null
+        values.clear()
+        history.clear()
+        storedCodes = null
+        pendingCodes = null
+        codesNote = null
+        vin = null
+        vinNote = null
+        deadPids.clear()
+        misses.clear()
+        header = ""
+        state = State.STARTING
+        job = scope.launch {
+            if (!initAdapter()) {
+                fail("Simulator failed to start.")
+                return@launch
+            }
+            state = State.CONNECTED
+            scope.launch { readVin() }
+            pollLoop()
+        }
     }
 
     private fun put(key: String, raw: Float) {
@@ -753,6 +1019,7 @@ class ObdManager(context: Context) {
 
     companion object {
         private const val HISTORY = 120
+        private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private val DEMO_PIDS = setOf(
             "0C", "0D", "11", "04", "0B", "0E", "05", "0F", "ATRV", "06", "07", "14", "15", "2F", "33", "46",
         )
@@ -764,6 +1031,7 @@ class ObdManager(context: Context) {
             UUID.fromString("e7810a71-73ae-499d-8c15-faa9aef0c3f2"),
             UUID.fromString("0000fff0-0000-1000-8000-00805f9b34fb"),
             UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb"),
+            UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e"),
         )
 
         val PERMISSIONS = arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)

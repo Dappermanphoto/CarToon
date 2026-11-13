@@ -274,13 +274,14 @@ fun SettingsScreen(
             val likely = listOf("vlink", "obd", "vgate", "elm", "icar")
             obd.found.sortedByDescending { d -> likely.any { d.name.lowercase().contains(it) } }.forEach { d ->
                 val chosen = d.address == settings.obdAddress
+                val unsupported = AdapterBrands.detect(d.name)
                 Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
                         .background(if (chosen) cs.primary.copy(alpha = 0.2f) else cs.surfaceVariant)
-                        .clickable {
+                        .clickable(enabled = unsupported == null) {
                             onChange(settings.copy(obdAddress = d.address, obdName = d.name))
                             obd.stopScan()
                         }
@@ -289,11 +290,27 @@ fun SettingsScreen(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(d.name, fontSize = ui.body, fontWeight = FontWeight.SemiBold)
-                        Text(d.address, fontSize = ui.small, color = cs.onSurfaceVariant)
+                        Text(
+                            if (d.classic) "${d.address} · Bluetooth Classic (paired)" else d.address,
+                            fontSize = ui.small, color = cs.onSurfaceVariant,
+                        )
+                        if (unsupported != null) {
+                            Text("Not supported. ${unsupported.message}", fontSize = ui.small, color = cs.error)
+                        }
                     }
-                    if (chosen) Text("Selected", fontSize = ui.small, color = cs.primary)
+                    if (unsupported != null) {
+                        Pill("Get the ${unsupported.appName} app", selected = true, onClick = { openOnPhone(context, unsupported.storeUri) })
+                    } else if (chosen) {
+                        Text("Selected", fontSize = ui.small, color = cs.primary)
+                    }
                 }
             }
+            Text(
+                "Bluetooth Classic adapters (OBDLink LX/MX+, BAFX, many ELM327 clones) must be paired in Android's Bluetooth settings first, then they appear here.",
+                fontSize = ui.small,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
             Spacer(Modifier.height(16.dp))
             ToggleRow(
                 title = "Metric units",
@@ -375,7 +392,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "CarToon V1.9    Made by @SlowCD7",
+                "CarToon V2.0    Made by @SlowCD7",
                 fontSize = ui.small,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.clickable(

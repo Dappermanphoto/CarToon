@@ -277,7 +277,7 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                                 tracker = tracker,
                             )
 
-                            Tab.PROFILE -> ProfileScreen(profile, settings.metricUnits)
+                            Tab.PROFILE -> ProfileScreen(profile, settings.metricUnits, obd.inDemo)
 
                             Tab.SETTINGS -> SettingsScreen(
                                 extra = {
@@ -309,6 +309,13 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                     settings.metricUnits,
                     Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = if (modules.voltage.low) 44.dp else 0.dp),
                 )
+                ServiceBanner(
+                    modules.odometer,
+                    Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(
+                        top = (if (modules.voltage.low) 44.dp else 0.dp) + (if (modules.alerts.hot) 44.dp else 0.dp),
+                    ),
+                )
+                if (!car) VinPrompt(obd, profile)
                 ParkedTestBadge(
                     parked,
                     Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(top = 4.dp, end = 8.dp),
