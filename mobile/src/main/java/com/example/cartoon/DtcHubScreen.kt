@@ -250,6 +250,16 @@ private fun DtcCard(code: String, open: Boolean, vehicle: String, onToggle: () -
                 fontSize = ui.small,
                 color = cs.onSurfaceVariant,
             )
+            Spacer(Modifier.height(10.dp))
+            var videoNote by remember(code) { mutableStateOf<String?>(null) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Pill("Watch repair videos", selected = true, onClick = {
+                    videoNote = if (openOnPhone(context, dtcVideoUri(code, vehicle))) {
+                        if (ui.car) "Opened on your phone." else null
+                    } else "No browser or YouTube app found."
+                })
+                videoNote?.let { Text(it, fontSize = ui.small, color = cs.primary) }
+            }
         }
     }
 }

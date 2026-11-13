@@ -211,3 +211,23 @@ fun VoltagePanel(obd: ObdManager, monitor: VoltageMonitor) {
         }
     }
 }
+
+
+/** Shown over every screen while the engine is running hot. */
+@Composable
+fun OverheatBanner(alerts: AlertMonitor, metric: Boolean, modifier: Modifier = Modifier) {
+    if (!alerts.hot) return
+    val ui = LocalUi.current
+    val c = alerts.coolant ?: 0f
+    Text(
+        "Engine hot: %.0f %s".format(if (metric) c else c * 9f / 5f + 32f, if (metric) "°C" else "°F"),
+        fontSize = ui.body,
+        fontWeight = FontWeight.Bold,
+        color = Color.White,
+        modifier = modifier
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(50))
+            .background(WarningRed)
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+    )
+}

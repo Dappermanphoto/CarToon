@@ -289,6 +289,7 @@ class ObdManager(context: Context) {
     }
 
     fun disconnect() {
+        monitors = null
         job?.cancel()
         job = null
         if (demo) {
@@ -621,6 +622,37 @@ class ObdManager(context: Context) {
             }
             t += dt
             delay(150)
+        }
+    }
+
+    /* ---------- Readiness monitors (smog check) ---------- */
+
+    var monitors by mutableStateOf<MonitorStatus?>(null)
+    var monitorsBusy by mutableStateOf(false)
+    var monitorsNote by mutableStateOf<String?>(null)
+
+    fun readMonitors() {
+        if (state != State.CONNECTED || monitorsBusy) return
+        if (demo) {
+            monitors = MonitorStatus.demo()
+            monitorsNote = null
+            return
+        }
+        scope.launch {
+            monitorsBusy = true
+            monitorsNote = null
+            val r = command("0101", 5000)
+            val hex = r?.lines()?.firstNotNullOfOrNull { line ->
+                val i = line.indexOf("4101")
+                if (i >= 0) line.substring(i + 4) else null
+            }
+            val bytes = hex?.chunked(2)?.mapNotNull { it.takeIf { c -> c.length == 2 }?.toIntOrNull(16) }?.toIntArray()
+            if (bytes != null && bytes.size >= 4) {
+                monitors = MonitorStatus.decode(bytes)
+            } else {
+                monitorsNote = "The car didn't answer. Is the ignition on?"
+            }
+            monitorsBusy = false
         }
     }
 

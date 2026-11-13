@@ -1,5 +1,9 @@
 package com.example.cartoon
 
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -171,6 +175,8 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
 
     // Light or dark status bar icons to match the theme
     SideEffect {
+        // On the car screen, leave Android Auto's own bars (time, signal) alone.
+        if (car) return@SideEffect
         val transparent = android.graphics.Color.TRANSPARENT
         (context as? ComponentActivity)?.enableEdgeToEdge(
             statusBarStyle = if (theme.isDark) SystemBarStyle.dark(transparent)
@@ -188,11 +194,15 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
         ) {
             // Your own photo, if you picked one in Settings
             WallpaperLayer(wallpapers, landscapeScreen, Modifier.fillMaxSize())
+            val wideLayout = car || maxWidth > maxHeight || maxWidth >= 840.dp
             val ui = UiScale(
                 car = car,
-                wide = car || maxWidth > maxHeight || maxWidth >= 840.dp,
+                wide = wideLayout,
                 short = maxHeight < 560.dp,
                 lyricScale = settings.lyricSize.scale,
+                // Scale from the screen's real size: height on wide screens, width on a phone held upright.
+                f = if (wideLayout) (maxHeight.value / 600f).coerceIn(0.5f, 1.25f)
+                else (maxWidth.value / 411f).coerceIn(0.85f, 1.2f),
             )
             CompositionLocalProvider(
                 LocalUi provides ui,
@@ -240,6 +250,7 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                                 library = library,
                                 hasFolder = folder != null,
                                 onPickFolder = { folderPicker.launch(null) },
+                                onlineLyrics = settings.onlineLyrics,
                             )
 
                             Tab.SPOTIFY -> SpotifyScreen(
@@ -263,9 +274,10 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                                 settings = settings,
                                 onOpenSettings = { tab = Tab.SETTINGS },
                                 modules = modules,
+                                tracker = tracker,
                             )
 
-                            Tab.PROFILE -> ProfileScreen(profile)
+                            Tab.PROFILE -> ProfileScreen(profile, settings.metricUnits)
 
                             Tab.SETTINGS -> SettingsScreen(
                                 extra = {
@@ -292,16 +304,27 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                     modules.voltage,
                     Modifier.align(Alignment.TopCenter).safeDrawingPadding(),
                 )
+                OverheatBanner(
+                    modules.alerts,
+                    settings.metricUnits,
+                    Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = if (modules.voltage.low) 44.dp else 0.dp),
+                )
                 ParkedTestBadge(
                     parked,
                     Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(top = 4.dp, end = 8.dp),
                 )
+                // Quietly checks GitHub when the app opens; only speaks up if there is an update.
+                if (!car) UpdatePrompt()
+                if (!car) WelcomeGate(onTryDemo = {
+                    obd.startDemo()
+                    tab = Tab.OBD
+                })
             }
         }
     }
 }
 
-/** Side rail on wide screens (car, landscape); bottom bar on a phone held upright. */
+/** Icon-only side rail on wide screens (car, landscape); icon-only bottom bar on a phone held upright. */
 @Composable
 private fun MainScaffold(tab: Tab, onTab: (Tab) -> Unit, content: @Composable () -> Unit) {
     val ui = LocalUi.current
@@ -312,16 +335,36 @@ private fun MainScaffold(tab: Tab, onTab: (Tab) -> Unit, content: @Composable ()
                 Modifier
                     .fillMaxHeight()
                     .width(ui.railWidth)
-                    .padding(vertical = if (ui.short) 6.dp else 16.dp),
+                    .padding(vertical = if (ui.short) 4.dp else 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = if (ui.short) Arrangement.SpaceEvenly else Arrangement.Top,
             ) {
                 if (!ui.short) {
                     Logo()
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(16.dp))
                 }
-                Tab.entries.forEach { t ->
-                    NavItem(t, t == tab, { onTab(t) }, Modifier.padding(vertical = if (ui.short) 0.dp else 4.dp))
+                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    val count = Tab.entries.size
+                    val clockRoom = 26.dp
+                    val fits = maxHeight >= ui.navTarget * count
+                    val showClock = maxHeight >= ui.navTarget * count + clockRoom
+                    if (fits) {
+                        Column(
+                            Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.SpaceEvenly,
+                        ) {
+                            Tab.entries.forEach { t -> NavItem(t, t == tab, { onTab(t) }, Modifier.fillMaxWidth()) }
+                            if (showClock) RailClock()
+                        }
+                    } else {
+                        // Very short screen: keep every button full size and let the rail scroll.
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Tab.entries.forEach { t -> NavItem(t, t == tab, { onTab(t) }, Modifier.fillMaxWidth()) }
+                        }
+                    }
                 }
             }
             Box(Modifier.weight(1f).fillMaxHeight().padding(top = if (ui.short) 4.dp else 12.dp)) { content() }
@@ -345,27 +388,52 @@ private fun MainScaffold(tab: Tab, onTab: (Tab) -> Unit, content: @Composable ()
     }
 }
 
+/** The time, drawn by CarToon (Android Auto's own clock isn't available to apps). */
+@Composable
+private fun RailClock() {
+    val ui = LocalUi.current
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(15_000)
+        }
+    }
+    val text = remember(now / 60_000) {
+        java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(now))
+    }
+    Text(
+        text,
+        fontSize = ui.small,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+    )
+}
+
+/** Icon-only menu button. The whole button is the tap target; the name is kept for screen readers. */
 @Composable
 private fun NavItem(tab: Tab, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
-    Column(
+    Box(
         modifier
+            .height(ui.navTarget)
             .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = if (ui.short) 4.dp else 8.dp, horizontal = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
         Box(
             Modifier
+                .size(width = ui.navTarget * 1.25f, height = ui.navTarget * 0.72f)
                 .clip(RoundedCornerShape(50))
                 .background(
                     animateColorAsState(
                         if (selected) cs.primary.copy(alpha = 0.18f) else Color.Transparent,
                         tween(240), label = "navPill",
                     ).value
-                )
-                .padding(horizontal = if (ui.short) 16.dp else 20.dp, vertical = if (ui.short) 4.dp else 6.dp),
+                ),
+            contentAlignment = Alignment.Center,
         ) {
             val appIcon = tab.appPackage()?.let { rememberAppIcon(it) }
             if (appIcon != null) {
@@ -384,14 +452,6 @@ private fun NavItem(tab: Tab, selected: Boolean, onClick: () -> Unit, modifier: 
                 )
             }
         }
-        Spacer(Modifier.height(if (ui.short) 2.dp else 4.dp))
-        Text(
-            tab.label,
-            fontSize = ui.small,
-            color = if (selected) cs.onSurface else cs.onSurfaceVariant,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-        )
     }
 }
 

@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,14 +71,30 @@ enum class ProfileField(val label: String, val example: String, val maxLength: I
     ENGINE("Engine", "4.3L V6", 30),
 }
 
-/** The driver and vehicle, saved on the phone. */
+/** The driver and their vehicles, saved on the phone. Several vehicles can be saved; one is active. */
 class ProfileStore(context: Context) {
     private val app = context.applicationContext
     private val prefs = app.getSharedPreferences("cartoon_profile", Context.MODE_PRIVATE)
-    val photoFile = File(app.filesDir, "vehicle_photo.jpg")
+
+    /** Ids of saved vehicles, in order. The first one keeps the original (unprefixed) preference keys. */
+    var vehicleIds by mutableStateOf(loadIds())
+        private set
+    var activeId by mutableStateOf(prefs.getString("active", Vehicles.FIRST)?.takeIf { it in vehicleIds } ?: vehicleIds.first())
+        private set
+
+    private fun key(id: String, name: String) = if (id == Vehicles.FIRST) name else "${id}_$name"
+    private fun loadIds(): List<String> = runCatching {
+        val arr = org.json.JSONArray(prefs.getString("vehicles", null) ?: "[\"${Vehicles.FIRST}\"]")
+        (0 until arr.length()).map { arr.getString(it) }.ifEmpty { listOf(Vehicles.FIRST) }
+    }.getOrDefault(listOf(Vehicles.FIRST))
+
+    private fun fileFor(id: String) =
+        File(app.filesDir, if (id == Vehicles.FIRST) "vehicle_photo.jpg" else "vehicle_photo_$id.jpg")
+
+    val photoFile: File get() = fileFor(activeId)
 
     private val fields = ProfileField.entries.associateWith {
-        mutableStateOf(prefs.getString(it.name, "").orEmpty())
+        mutableStateOf(prefs.getString(key(activeId, it.name), "").orEmpty())
     }
     var photoVersion by mutableIntStateOf(prefs.getInt("photo_v", 0))
         private set
@@ -89,7 +106,7 @@ class ProfileStore(context: Context) {
     operator fun set(field: ProfileField, value: String) {
         val clean = value.take(field.maxLength).let { if (field.numeric) it.filter(Char::isDigit) else it }
         fields.getValue(field).value = clean
-        prefs.edit().putString(field.name, clean.trim()).apply()
+        prefs.edit().putString(key(activeId, field.name), clean.trim()).apply()
     }
 
     /** "2001 Chevrolet S10 LS" */
@@ -98,6 +115,56 @@ class ProfileStore(context: Context) {
             .map { this[it].trim() }.filter { it.isNotEmpty() }.joinToString(" ")
 
     val hasVehicle: Boolean get() = vehicleName().isNotEmpty()
+
+    /** Short name for the vehicle picker. */
+    fun labelFor(id: String): String {
+        val name = listOf(ProfileField.YEAR, ProfileField.MAKE, ProfileField.MODEL)
+            .map { prefs.getString(key(id, it.name), "").orEmpty().trim() }
+            .filter { it.isNotEmpty() }.joinToString(" ")
+        return name.ifEmpty { "Vehicle ${vehicleIds.indexOf(id) + 1}" }
+    }
+
+    private fun reloadFields() {
+        ProfileField.entries.forEach { fields.getValue(it).value = prefs.getString(key(activeId, it.name), "").orEmpty() }
+        hasPhoto = photoFile.exists()
+        photoVersion++
+        prefs.edit().putInt("photo_v", photoVersion).apply()
+    }
+
+    fun select(id: String) {
+        if (id !in vehicleIds || id == activeId) return
+        activeId = id
+        prefs.edit().putString("active", id).apply()
+        reloadFields()
+    }
+
+    fun addVehicle() {
+        if (vehicleIds.size >= 6) return
+        val id = "v" + (System.currentTimeMillis() % 1_000_000_000L)
+        vehicleIds = vehicleIds + id
+        saveIds()
+        select(id)
+    }
+
+    /** Removes the active vehicle (never the last one) and its photo. */
+    fun removeActive() {
+        if (vehicleIds.size <= 1) return
+        val gone = activeId
+        val next = vehicleIds.first { it != gone }
+        ProfileField.entries.forEach { prefs.edit().remove(key(gone, it.name)).apply() }
+        fileFor(gone).delete()
+        vehicleIds = vehicleIds - gone
+        saveIds()
+        activeId = next
+        prefs.edit().putString("active", next).apply()
+        reloadFields()
+    }
+
+    private fun saveIds() {
+        val arr = org.json.JSONArray()
+        vehicleIds.forEach { arr.put(it) }
+        prefs.edit().putString("vehicles", arr.toString()).apply()
+    }
 
     suspend fun importPhoto(context: Context, uri: Uri): Boolean {
         val ok = withContext(Dispatchers.IO) { importScaledJpeg(context, uri, photoFile, 1600) }
@@ -135,7 +202,7 @@ val PersonIcon: ImageVector by lazy {
 /* ------------------------------ Screen ------------------------------ */
 
 @Composable
-fun ProfileScreen(store: ProfileStore) {
+fun ProfileScreen(store: ProfileStore, metric: Boolean = false) {
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
@@ -144,6 +211,7 @@ fun ProfileScreen(store: ProfileStore) {
     // On the car screen there's no phone keyboard, so fields open the on-screen keyboard.
     var editing by remember { mutableStateOf<ProfileField?>(null) }
     var photoNote by remember { mutableStateOf<String?>(null) }
+    var confirmRemove by remember { mutableStateOf(false) }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -213,6 +281,26 @@ fun ProfileScreen(store: ProfileStore) {
             .padding(horizontal = ui.pad, vertical = 12.dp)
     ) {
         Text("Profile", fontSize = ui.headline, fontWeight = FontWeight.Black)
+        Spacer(Modifier.height(10.dp))
+        // Vehicle picker: one chip per saved vehicle
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            store.vehicleIds.forEach { id ->
+                Pill(store.labelFor(id), selected = id == store.activeId, onClick = { store.select(id) })
+            }
+            if (store.vehicleIds.size < 6) Pill("+ Add vehicle", color = cs.onSurfaceVariant, onClick = { store.addVehicle() })
+            if (store.vehicleIds.size > 1) {
+                if (confirmRemove) {
+                    Pill("Remove this vehicle?", selected = true, onClick = { store.removeActive(); confirmRemove = false })
+                    Pill("Cancel", color = cs.onSurfaceVariant, onClick = { confirmRemove = false })
+                } else {
+                    Pill("Remove", color = cs.onSurfaceVariant, onClick = { confirmRemove = true })
+                }
+            }
+        }
         Spacer(Modifier.height(14.dp))
         if (ui.wide) {
             Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -224,6 +312,8 @@ fun ProfileScreen(store: ProfileStore) {
             Spacer(Modifier.height(18.dp))
             form(Modifier.fillMaxWidth())
         }
+        Spacer(Modifier.height(24.dp))
+        MaintenanceSection(store, metric)
         Spacer(Modifier.height(24.dp))
     }
 }

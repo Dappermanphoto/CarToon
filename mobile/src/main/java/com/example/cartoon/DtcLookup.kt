@@ -66,6 +66,10 @@ fun DtcLookupRow(code: String, vehicle: String) {
 fun dtcSearchUri(code: String, vehicle: String): Uri =
     Uri.parse("https://www.google.com/search?q=" + Uri.encode("$vehicle $code code meaning causes fix".trim()))
 
+/** YouTube search for repair videos about this code on this vehicle. */
+fun dtcVideoUri(code: String, vehicle: String): Uri =
+    Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode("$vehicle $code how to fix".trim()))
+
 fun dtcDatabaseUri(code: String): Uri =
     Uri.parse("https://www.obd-codes.com/" + Uri.encode(code.lowercase()))
 

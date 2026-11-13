@@ -1,5 +1,10 @@
 package com.example.cartoon
 
+import kotlinx.coroutines.delay
+import androidx.compose.ui.unit.sp
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import android.content.Context
 import android.net.Uri
 import android.os.Build
 import androidx.compose.animation.core.animateFloatAsState
@@ -235,4 +240,91 @@ fun UpdateSection() {
         }
     }
     Spacer(Modifier.height(20.dp))
+}
+
+/**
+ * Checks GitHub quietly when the app opens (phone only). Nothing shows unless a newer release
+ * exists. Then the person can install it now or choose Later (asked again after a day).
+ */
+@Composable
+fun UpdatePrompt() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = remember { context.getSharedPreferences("cartoon_update", Context.MODE_PRIVATE) }
+    var offer by remember { mutableStateOf<ReleaseInfo?>(null) }
+    var progress by remember { mutableStateOf<Float?>(null) }
+    var problem by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        delay(4_000) // let the app settle first
+        val r = Updater.latest().getOrNull() ?: return@LaunchedEffect
+        if (r.apkUrl.isBlank() || !Updater.isNewer(r.version, Updater.installedVersion(context))) return@LaunchedEffect
+        if (System.currentTimeMillis() < prefs.getLong("snooze_" + r.version, 0L)) return@LaunchedEffect
+        offer = r
+    }
+
+    val r = offer ?: return
+    fun later() {
+        prefs.edit().putLong("snooze_" + r.version, System.currentTimeMillis() + 24L * 60 * 60 * 1000).apply()
+        offer = null
+        progress = null
+        problem = null
+    }
+
+    fun installNow() {
+        problem = null
+        progress = 0f
+        scope.launch {
+            Updater.download(context, r) { p -> progress = p }.fold(
+                onSuccess = { file ->
+                    progress = null
+                    if (Updater.sameSigner(context, file) == false) {
+                        problem = "This update is signed with a different key than the CarToon on your phone " +
+                            "(usually a test build). Uninstall CarToon once, then install the APK from the " +
+                            "GitHub Releases page."
+                    } else when (Updater.install(context, file)) {
+                        InstallStart.STARTED -> offer = null
+                        InstallStart.NEEDS_PERMISSION ->
+                            problem = "Allow CarToon to install apps on the screen that just opened, then open Settings \u2192 App updates and tap Install now."
+                        InstallStart.FAILED -> problem = "Android couldn't open the installer."
+                    }
+                },
+                onFailure = {
+                    progress = null
+                    problem = "The download failed. Check your connection, or try later from Settings."
+                },
+            )
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (progress == null) later() },
+        title = { Text("Update available") },
+        text = {
+            Column {
+                Text("CarToon V${r.version} is ready. You have V${Updater.installedVersion(context)}.")
+                val notes = r.notes.replace(Regex("[#*`>_]"), "").trim().take(200)
+                if (notes.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(notes, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                progress?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Downloading\u2026 ${(it * 100).toInt()}%", fontSize = 13.sp)
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth())
+                }
+                problem?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { installNow() }, enabled = progress == null) { Text("Install now") }
+        },
+        dismissButton = {
+            TextButton(onClick = { later() }, enabled = progress == null) { Text("Later") }
+        },
+    )
 }

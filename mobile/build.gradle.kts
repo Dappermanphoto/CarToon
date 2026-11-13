@@ -22,8 +22,8 @@ android {
         applicationId = "com.slowcd7.cartoon"
         minSdk = 33
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.7"
+        versionCode = 6
+        versionName = "1.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

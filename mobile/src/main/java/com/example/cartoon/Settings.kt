@@ -45,6 +45,7 @@ data class AppSettings(
     val obdAddress: String = "",
     val obdName: String = "",
     val metricUnits: Boolean = false,
+    val onlineLyrics: Boolean = true,
 )
 
 /** Saves settings on the phone so they stick between launches. */
@@ -64,6 +65,7 @@ class SettingsStore(context: Context) {
             obdAddress = prefs.getString("obd_address", "").orEmpty(),
             obdName = prefs.getString("obd_name", "").orEmpty(),
             metricUnits = prefs.getBoolean("metric_units", false),
+            onlineLyrics = prefs.getBoolean("online_lyrics", true),
         )
     }
 
@@ -79,6 +81,7 @@ class SettingsStore(context: Context) {
             .putString("obd_address", s.obdAddress)
             .putString("obd_name", s.obdName)
             .putBoolean("metric_units", s.metricUnits)
+            .putBoolean("online_lyrics", s.onlineLyrics)
             .apply()
     }
 

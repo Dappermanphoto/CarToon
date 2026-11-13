@@ -193,6 +193,10 @@ fun SettingsScreen(
                 color = cs.onSurfaceVariant,
             )
             Spacer(Modifier.height(10.dp))
+            var guide by remember { mutableStateOf(false) }
+            Pill("Step-by-step setup guide", selected = true, onClick = { guide = true })
+            if (guide) SpotifyGuideDialog { guide = false }
+            Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = idText,
                 onValueChange = {
@@ -320,6 +324,15 @@ fun SettingsScreen(
             }
         }
 
+        Section("Lyrics") {
+            ToggleRow(
+                title = "Find lyrics online",
+                body = "Looks up synced lyrics for the song playing in another app, using lrclib.net. " +
+                    "Only the artist, title and length of the song are sent.",
+                checked = settings.onlineLyrics,
+            ) { onChange(settings.copy(onlineLyrics = it)) }
+        }
+
         Section("Media folder") {
             val cs = MaterialTheme.colorScheme
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -362,7 +375,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "CarToon V1.7    Made by @SlowCD7",
+                "CarToon V1.9    Made by @SlowCD7",
                 fontSize = ui.small,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.clickable(

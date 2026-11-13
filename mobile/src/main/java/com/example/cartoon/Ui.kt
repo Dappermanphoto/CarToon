@@ -75,20 +75,27 @@ data class UiScale(
     val wide: Boolean,
     val short: Boolean,
     val lyricScale: Float = 1f,
+    /** Smooth size factor from the real screen: 1.0 = a roomy 600dp-tall screen, smaller = tighter. */
+    val f: Float = if (short) 0.8f else 1f,
 ) {
-    val pad: Dp get() = if (short) 14.dp else 20.dp
-    val control: Dp get() = if (short) 46.dp else 56.dp
-    val play: Dp get() = if (short) 60.dp else 76.dp
-    val art: Dp get() = if (short) 136.dp else 184.dp
-    val iconButton: Dp get() = if (short) 42.dp else 48.dp
-    val headline: TextUnit get() = if (short) 22.sp else 28.sp
-    val title: TextUnit get() = if (short) 18.sp else 22.sp
-    val body: TextUnit get() = if (short) 14.sp else 16.sp
-    val small: TextUnit get() = if (short) 12.sp else 13.sp
-    val lyric: TextUnit get() = (if (short) 22.sp else 27.sp) * lyricScale
-    val railWidth: Dp get() = if (short) 84.dp else 104.dp
-    val navIcon: Dp get() = if (short) 22.dp else 26.dp
-    val key: Dp get() = if (short) 40.dp else 52.dp
+    private fun d(v: Float, min: Float): Dp = maxOf(v * f, min).dp
+    private fun t(v: Float, min: Float): TextUnit = maxOf(v * f, min).sp
+
+    val pad: Dp get() = d(20f, 8f)
+    val control: Dp get() = d(56f, 40f)
+    val play: Dp get() = d(76f, 52f)
+    val art: Dp get() = d(184f, 96f)
+    val iconButton: Dp get() = d(48f, 38f)
+    val headline: TextUnit get() = t(28f, 18f)
+    val title: TextUnit get() = t(22f, 15f)
+    val body: TextUnit get() = t(16f, 12f)
+    val small: TextUnit get() = t(13f, 10.5f)
+    val lyric: TextUnit get() = t(27f, 18f) * lyricScale
+    val railWidth: Dp get() = d(84f, 64f)
+    val navIcon: Dp get() = d(30f, 22f)
+    /** Height of one menu button (at least a comfortable finger size). */
+    val navTarget: Dp get() = d(56f, 44f)
+    val key: Dp get() = d(52f, 34f)
 }
 
 val LocalUi = staticCompositionLocalOf { UiScale(car = false, wide = false, short = false) }

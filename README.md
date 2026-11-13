@@ -91,7 +91,7 @@ Android Auto updates sometimes switch **Unknown sources** off again. If CarToon 
 repeat step 3.
 
 ### Updating
-**In the app (easiest):** open CarToon's **Settings** on your phone. The **App updates** card checks
+**In the app (easiest):** CarToon checks GitHub quietly each time you open it on your phone. If a newer version exists, a prompt offers **Install now** or **Later** (it asks again after a day). You can also open CarToon's **Settings** on your phone. The **App updates** card checks
 GitHub for a newer release. Tap **Download and install**, then confirm when Android asks. The first
 time, Android sends you to a screen where you allow CarToon to install apps. Turn that on, come
 back and tap **Install now**.
@@ -174,13 +174,31 @@ Type a search with the on-screen keyboard (or tap the microphone). Tap a video t
 - **Cluster:** digital gauges. **Hold a gauge** to change which sensor it shows or rename it.
 - **Graph / List:** the same sensors as a live chart or a list.
 - **Voltage:** battery and charging voltage, with a warning if it drops below your limit.
+- **Split:** now playing on one side and your first two gauges on the other.
+- **Smog:** reads the car's emissions self-tests ("readiness monitors") and tells you if it is ready
+  for a smog test, or which tests still need more driving.
+- **Trips:** logs each drive (distance, speed, idle time, hottest and lowest readings) and exports
+  them as a spreadsheet file.
+- **Health:** record what "normal" looks like at warm idle (voltage, fuel trim, load, airflow...) and
+  see later if anything has drifted.
+- **Repair videos:** open a code and tap **Watch repair videos** for a YouTube search with your vehicle.
+- **Share a layout:** on the Cluster, **Copy layout** gives a short text code you can send to a friend;
+  they tap **Paste layout** on their phone.
+- **Alerts:** an overheat banner with three beeps (and beeps for low voltage). Set the limit in Settings.
 - Older cars answer slowly. In Settings you can make fast sensors (RPM, speed) update more often.
 - Notes: oil pressure isn't part of standard OBD-II, and cars from around 2001 only have basic
   oxygen sensors, so there is no true air-fuel ratio.
 
 ### Profile
 Add your name, a photo of your vehicle and its details. The vehicle makes the **Look up** searches
-more specific. It's stored only on your phone.
+more specific. You can save up to six vehicles and switch between them. Each one has its own
+**service reminders** (oil, tires, brake fluid and more, by distance or time), trips and health
+baseline. Everything is stored only on your phone.
+
+### Lyrics
+Synced lyrics appear on the Playing tab for whatever song is playing, found on
+[LRCLIB](https://lrclib.net) (free). Turn this off in **Settings → Lyrics**. Only the artist, title
+and song length are sent.
 
 ### Wallpaper
 **Settings → Wallpaper.** Choose one **portrait** photo (used on the phone) and one **landscape**
@@ -239,6 +257,7 @@ Your own keys never go into the code. They are typed into the app's Settings.
   read and cached on your phone. Please visit the site for the full articles.
 - Your YouTube key, Spotify Client ID, profile, wallpapers and settings are stored only on your phone.
   CarToon has no server and sends no analytics. The network requests it makes are to YouTube,
-  Spotify, obd-codes.com, the photos Spotify provides, and GitHub (to check for updates).
+  Spotify, obd-codes.com, lrclib.net (lyrics, can be turned off), the photos Spotify provides, and
+  GitHub (to check for updates).
 - OBD tools can read and clear codes on your car. Use them at your own risk, and never operate the
   app while driving.

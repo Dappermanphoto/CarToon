@@ -19,6 +19,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -40,6 +41,7 @@ fun NowPlayingScreen(
     library: Library,
     hasFolder: Boolean,
     onPickFolder: () -> Unit,
+    onlineLyrics: Boolean = true,
 ) {
     val context = LocalContext.current
     val ui = LocalUi.current
@@ -95,7 +97,7 @@ fun NowPlayingScreen(
             return@Column
         }
 
-        NowPlayingContent(tracker, song, library, hasFolder, onPickFolder)
+        NowPlayingContent(tracker, song, library, hasFolder, onPickFolder, onlineLyrics)
     }
 }
 
@@ -106,6 +108,7 @@ private fun NowPlayingContent(
     library: Library,
     hasFolder: Boolean,
     onPickFolder: () -> Unit,
+    onlineLyrics: Boolean,
 ) {
     val context = LocalContext.current
     val ui = LocalUi.current
@@ -121,21 +124,67 @@ private fun NowPlayingContent(
 
     val position = song.positionAt(now)
 
-    MediaHero(
-        title = song.title,
-        subtitle = song.artist,
-        source = song.appName,
-        art = song.art,
-        isPlaying = song.isPlaying,
-        position = position,
-        duration = song.durationMs,
-        canSeek = song.canSeek,
-        onSeek = tracker::seekTo,
-        onPlayPause = tracker::playPause,
-        onPrevious = tracker::previous,
-        onNext = tracker::next,
-        modifier = Modifier.fillMaxSize(),
-    )
+    // Synced lyrics from LRCLIB (if turned on in Settings)
+    val lyrics by produceState<Lyrics?>(null, song.title, song.artist, onlineLyrics) {
+        value = null
+        if (onlineLyrics && song.title.isNotBlank()) {
+            value = LyricsWeb.fetch(context, song.artist, song.title, song.durationMs)
+        }
+    }
+    var offsetMs by remember(song.title) { mutableLongStateOf(0L) }
+    val found = lyrics
+
+    val hero: @Composable (Modifier) -> Unit = { m ->
+        MediaHero(
+            title = song.title,
+            subtitle = song.artist,
+            source = song.appName,
+            art = song.art,
+            isPlaying = song.isPlaying,
+            position = position,
+            duration = song.durationMs,
+            canSeek = song.canSeek,
+            onSeek = tracker::seekTo,
+            onPlayPause = tracker::playPause,
+            onPrevious = tracker::previous,
+            onNext = tracker::next,
+            modifier = m,
+            actions = {
+                if (found != null && found.synced) {
+                    Pill("Lyrics −0.5s", color = MaterialTheme.colorScheme.onSurfaceVariant, onClick = { offsetMs -= 500 })
+                    Pill("+0.5s", color = MaterialTheme.colorScheme.onSurfaceVariant, onClick = { offsetMs += 500 })
+                }
+            },
+        )
+    }
+
+    if (found == null) {
+        hero(Modifier.fillMaxSize())
+    } else {
+        val panel: @Composable (Modifier) -> Unit = { m ->
+            LyricsPanel(
+                lyrics = found,
+                position = position + offsetMs,
+                onSeek = if (song.canSeek) ({ t: Long -> tracker.seekTo(t - offsetMs) }) else null,
+                emptyTitle = "No lyrics",
+                emptyBody = "",
+                modifier = m,
+            )
+        }
+        if (ui.wide) {
+            Row(Modifier.fillMaxSize()) {
+                hero(Modifier.weight(0.45f).fillMaxHeight())
+                Spacer(Modifier.width(ui.pad))
+                panel(Modifier.weight(0.55f).fillMaxHeight())
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                hero(Modifier.fillMaxWidth().weight(0.58f))
+                Spacer(Modifier.height(10.dp))
+                panel(Modifier.fillMaxWidth().weight(0.42f))
+            }
+        }
+    }
 }
 
 /** Lets the user nudge lyrics earlier or later if their file is slightly off. */

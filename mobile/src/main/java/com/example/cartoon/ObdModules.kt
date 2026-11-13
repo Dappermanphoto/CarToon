@@ -17,11 +17,16 @@ class ObdModules(context: Context, val obd: ObdManager) {
     val voltage = VoltageMonitor(context, obd, scheduler)
     val gaugeStyle = GaugeStyle(context)
     val parked = ParkedMode(context, obd)
+    val trips = TripLog(context, obd, scheduler)
+    val health = HealthBaseline(context)
+    val alerts = AlertMonitor(context, obd, voltage, scheduler)
 
     init {
         scheduler.start(scope)
         voltage.start(scope)
         parked.start(scope)
+        trips.start(scope)
+        alerts.start(scope)
     }
 
     fun stop() {

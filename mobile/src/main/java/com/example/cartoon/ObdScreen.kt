@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,10 +60,19 @@ import androidx.compose.ui.unit.sp
 /** Longest gauge name; keeps custom names from overrunning the cluster. */
 private const val GAUGE_NAME_MAX = 16
 
-private enum class ObdView(val label: String) { CODES("Codes"), CLUSTER("Cluster"), GRAPH("Graph"), LIST("List"), VOLTS("Voltage") }
+private enum class ObdView(val label: String) {
+    CODES("Codes"), CLUSTER("Cluster"), SPLIT("Split"), GRAPH("Graph"), LIST("List"), VOLTS("Voltage"),
+    SMOG("Smog"), TRIPS("Trips"), HEALTH("Health"),
+}
 
 @Composable
-fun ObdScreen(obd: ObdManager, settings: AppSettings, onOpenSettings: () -> Unit, modules: ObdModules? = null) {
+fun ObdScreen(
+    obd: ObdManager,
+    settings: AppSettings,
+    onOpenSettings: () -> Unit,
+    modules: ObdModules? = null,
+    tracker: NowPlayingTracker? = null,
+) {
     val context = LocalContext.current
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
@@ -85,8 +95,10 @@ fun ObdScreen(obd: ObdManager, settings: AppSettings, onOpenSettings: () -> Unit
     val supported = obd.supported
     LaunchedEffect(view, gauges, graphPids, supported, editing) {
         val wanted = when (view) {
-            ObdView.CODES -> emptySet()
+            ObdView.CODES, ObdView.SMOG, ObdView.TRIPS -> emptySet()
             ObdView.CLUSTER -> gauges.map { it.pid }.toSet()
+            ObdView.SPLIT -> gauges.take(2).map { it.pid }.toSet()
+            ObdView.HEALTH -> HealthBaseline.PIDS
             ObdView.GRAPH -> graphPids.toSet()
             ObdView.LIST -> supported
             ObdView.VOLTS -> setOf("ATRV")
@@ -175,6 +187,10 @@ fun ObdScreen(obd: ObdManager, settings: AppSettings, onOpenSettings: () -> Unit
                 when (view) {
                     ObdView.CODES -> DtcHubScreen(obd)
                     ObdView.CLUSTER -> ClusterView(obd, metric) { editing = it }
+                    ObdView.SPLIT -> SplitView(obd, metric, tracker)
+                    ObdView.SMOG -> SmogView(obd)
+                    ObdView.TRIPS -> if (modules != null) TripsView(modules.trips, metric)
+                    ObdView.HEALTH -> if (modules != null) HealthView(obd, modules.health, metric)
                     ObdView.GRAPH -> GraphView(obd, metric, graphPids) { graphPids = it }
                     ObdView.LIST -> ListView(obd, metric)
                     ObdView.VOLTS -> if (modules != null) VoltagePanel(obd, modules.voltage)
@@ -303,12 +319,138 @@ private fun ClusterView(obd: ObdManager, metric: Boolean, onEdit: (Int) -> Unit)
             }
         }
         if (!ui.short) {
-            Text(
-                "Hold a gauge to change it",
-                fontSize = ui.small,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp),
+            val context = LocalContext.current
+            var layoutNote by remember { mutableStateOf<String?>(null) }
+            Row(
+                Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    layoutNote ?: "Hold a gauge to change it",
+                    fontSize = ui.small,
+                    color = if (layoutNote != null) cs.primary else cs.onSurfaceVariant,
+                )
+                Pill("Copy layout", color = cs.onSurfaceVariant, onClick = {
+                    val code = GaugeLayout.encode(gauges)
+                    context.getSystemService(android.content.ClipboardManager::class.java)
+                        ?.setPrimaryClip(android.content.ClipData.newPlainText("CarToon layout", code))
+                    layoutNote = "Layout copied. Paste it to a friend."
+                })
+                if (!ui.car) {
+                    Pill("Paste layout", color = cs.onSurfaceVariant, onClick = {
+                        val text = context.getSystemService(android.content.ClipboardManager::class.java)
+                            ?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                        val slots = GaugeLayout.decode(text, gauges.size)
+                        if (slots == null) {
+                            layoutNote = "No CarToon layout on the clipboard."
+                        } else {
+                            slots.forEachIndexed { i, slot -> obd.setGauge(i, slot) }
+                            layoutNote = "Layout applied."
+                        }
+                    })
+                }
+            }
+        }
+    }
+}
+
+/** Gauge layouts as short text, so they can be shared in a message. */
+object GaugeLayout {
+    private const val PREFIX = "CARTOON-LAYOUT"
+
+    fun encode(gauges: List<GaugeSlot>): String =
+        PREFIX + gauges.joinToString("") { "|" + it.pid + ":" + it.name.replace("|", "").replace(":", "") }
+
+    /** Returns null when [text] isn't a layout for exactly [count] gauges using sensors CarToon knows. */
+    fun decode(text: String, count: Int): List<GaugeSlot>? {
+        val parts = text.trim().split("|")
+        if (parts.firstOrNull() != PREFIX || parts.size != count + 1) return null
+        return parts.drop(1).map { part ->
+            val pid = part.substringBefore(":")
+            val known = ObdPids[pid] ?: return null
+            val name = part.substringAfter(":", known.name).take(GAUGE_NAME_MAX).ifBlank { known.name }
+            GaugeSlot(pid, name)
+        }
+    }
+}
+
+/* ------------------------------ Split dashboard ------------------------------ */
+
+/** Now playing on one side, the first two gauges on the other. */
+@Composable
+private fun SplitView(obd: ObdManager, metric: Boolean, tracker: NowPlayingTracker?) {
+    val ui = LocalUi.current
+    val cs = MaterialTheme.colorScheme
+    LaunchedEffect(tracker) { tracker?.start() }
+    val empty = remember { kotlinx.coroutines.flow.MutableStateFlow<NowPlaying?>(null) }
+    val np by (tracker?.state ?: empty).collectAsState()
+    val song = np
+
+    val card: @Composable (Modifier) -> Unit = { m ->
+        Column(
+            m
+                .clip(RoundedCornerShape(28.dp))
+                .background(cs.surface)
+                .padding(14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            if (song == null || song.title.isBlank() || tracker == null) {
+                Text("Nothing playing", fontSize = ui.title, fontWeight = FontWeight.Bold)
+                Text(
+                    "Start music in any app. Turn on notification access in Settings if it doesn't show up.",
+                    fontSize = ui.small,
+                    color = cs.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                ArtTile(song.art, AppIcons.Note, if (ui.short) 64.dp else 96.dp, cs.secondary)
+                Spacer(Modifier.height(8.dp))
+                Text(song.title, fontSize = ui.body, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                Text(song.artist, fontSize = ui.small, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircleIconButton(AppIcons.Previous, "Previous", ui.iconButton, tracker::previous)
+                    CircleIconButton(
+                        if (song.isPlaying) AppIcons.Pause else AppIcons.Play,
+                        if (song.isPlaying) "Pause" else "Play",
+                        ui.control,
+                        tracker::playPause,
+                        primary = true,
+                    )
+                    CircleIconButton(AppIcons.Next, "Next", ui.iconButton, tracker::next)
+                }
+            }
+        }
+    }
+    val gauge: @Composable (Int, Modifier) -> Unit = { i, m ->
+        val slot = obd.gauges.getOrNull(i)
+        if (slot != null) {
+            Gauge(
+                slot = slot,
+                raw = obd.values[slot.pid],
+                supported = slot.pid in obd.supported,
+                metric = metric,
+                onLongPress = {},
+                modifier = m,
             )
+        }
+    }
+
+    if (ui.wide) {
+        Row(Modifier.fillMaxSize()) {
+            card(Modifier.weight(1.2f).fillMaxHeight().padding(4.dp))
+            gauge(0, Modifier.weight(1f).fillMaxHeight().padding(4.dp))
+            gauge(1, Modifier.weight(1f).fillMaxHeight().padding(4.dp))
+        }
+    } else {
+        Column(Modifier.fillMaxSize()) {
+            card(Modifier.weight(1f).fillMaxWidth().padding(4.dp))
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                gauge(0, Modifier.weight(1f).fillMaxHeight().padding(4.dp))
+                gauge(1, Modifier.weight(1f).fillMaxHeight().padding(4.dp))
+            }
         }
     }
 }

@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 fun AdvancedSettingsSections(modules: ObdModules) {
     GaugeColorSection(modules.gaugeStyle)
     VoltageSection(modules.voltage)
+    AlertsSection(modules.alerts)
+    TripsSection(modules.trips)
     PollingSection(modules.scheduler)
 }
 
@@ -258,5 +260,55 @@ private fun PollingSection(scheduler: PollScheduler) {
                 color = cs.onSurfaceVariant,
             )
         }
+    }
+}
+
+
+/* ------------------------------ Alerts and trips ------------------------------ */
+
+@Composable
+private fun AlertsSection(alerts: AlertMonitor) {
+    val ui = LocalUi.current
+    val cs = MaterialTheme.colorScheme
+    AdvSection("Engine alerts") {
+        AdvSwitchRow(
+            title = "Overheat warning",
+            body = "Shows a banner on every screen when the coolant gets too hot.",
+            checked = alerts.enabled,
+        ) { alerts.configure(it, alerts.sound, alerts.coolantLimit) }
+        if (alerts.enabled) {
+            Spacer(Modifier.height(12.dp))
+            AdvSwitchRow(
+                title = "Beep",
+                body = "Plays three beeps through the phone (and the car speakers) for overheating and low voltage.",
+                checked = alerts.sound,
+            ) { alerts.configure(true, it, alerts.coolantLimit) }
+            Spacer(Modifier.height(12.dp))
+            val f = alerts.coolantLimit * 9f / 5f + 32f
+            Text(
+                "Warn above %.0f °C (%.0f °F)".format(alerts.coolantLimit, f),
+                fontSize = ui.body,
+                fontWeight = FontWeight.SemiBold,
+            )
+            AdvSlider(alerts.coolantLimit, 95f..125f, steps = 29) {
+                alerts.configure(true, alerts.sound, Math.round(it).toFloat())
+            }
+            Text(
+                "Most engines run around 90 to 105 °C. Pull over safely if it keeps climbing.",
+                fontSize = ui.small,
+                color = cs.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TripsSection(log: TripLog) {
+    AdvSection("Trip log") {
+        AdvSwitchRow(
+            title = "Record trips",
+            body = "Saves distance, speed and idle time for each drive while CarToon is connected to the car. Stays on your phone.",
+            checked = log.enabled,
+        ) { log.configure(it) }
     }
 }
