@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -332,6 +333,16 @@ fun ConnectionPill(auto: AutoConnector, modifier: Modifier = Modifier) {
     if (status == AutoConnector.Status.IDLE) return
     val ui = LocalUi.current
     val cs = MaterialTheme.colorScheme
+    // Connected and demo are shown briefly, then the pill gets out of the way
+    var visible by remember(status) { mutableStateOf(true) }
+    LaunchedEffect(status) {
+        visible = true
+        if (status == AutoConnector.Status.CONNECTED || status == AutoConnector.Status.DEMO) {
+            delay(4000)
+            visible = false
+        }
+    }
+    if (!visible) return
     val (label, color) = when (status) {
         AutoConnector.Status.SEARCHING -> "Searching…" to Color(0xFFFFB547)
         AutoConnector.Status.CONNECTING -> "Connecting…" to Color(0xFF7FD4FF)
@@ -343,13 +354,13 @@ fun ConnectionPill(auto: AutoConnector, modifier: Modifier = Modifier) {
         modifier
             .padding(top = 4.dp, start = 8.dp)
             .clip(RoundedCornerShape(50))
-            .background(cs.surface.copy(alpha = 0.92f))
+            .background(Color(0xCC15171C))
             .padding(horizontal = 12.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(color))
         Spacer(Modifier.width(7.dp))
-        Text(label, fontSize = ui.small, fontWeight = FontWeight.SemiBold, color = cs.onSurface)
+        Text(label, fontSize = ui.small, fontWeight = FontWeight.SemiBold, color = Color.White)
     }
 }
 

@@ -147,6 +147,10 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
     val parked = modules.parked
     val landscapeScreen = configuration.screenWidthDp > configuration.screenHeightDp
     var playingVideo by remember { mutableStateOf<YtVideo?>(null) }
+    var settingsTaps by remember { mutableIntStateOf(0) }
+    var lastSettingsTap by remember { mutableStateOf(0L) }
+    var showPin by remember { mutableStateOf(false) }
+    var showUnknown by remember { mutableStateOf(false) }
 
     var folder by remember { mutableStateOf(prefs.getString(KEY_FOLDER, null)?.let(Uri::parse)) }
     var library by remember { mutableStateOf(Library.EMPTY) }
@@ -244,7 +248,19 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                         },
                     )
                 } else {
-                    MainScaffold(tab, onTab = { tab = it }) {
+                    MainScaffold(tab, onTab = { t ->
+                        // Five quick taps on the Settings icon open a PIN prompt for the hidden tools
+                        if (t == Tab.SETTINGS && !car) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            settingsTaps = if (now - lastSettingsTap < 1500) settingsTaps + 1 else 1
+                            lastSettingsTap = now
+                            if (settingsTaps >= 5) {
+                                settingsTaps = 0
+                                showPin = true
+                            }
+                        }
+                        tab = t
+                    }) {
                         Crossfade(targetState = tab, animationSpec = tween(220), label = "tab") { current ->
                         when (current) {
                             Tab.NOW_PLAYING -> NowPlayingScreen(
@@ -321,6 +337,12 @@ fun CarToonApp(player: ExoPlayer, tracker: NowPlayingTracker, spotify: SpotifyCo
                     remember { ObdHub.auto(context) },
                     Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(top = 4.dp, start = 8.dp),
                 )
+                if (showUnknown) {
+                    Box(Modifier.fillMaxSize().background(theme.colors.background).safeDrawingPadding()) {
+                        UnknownPidsScreen(modules.unknownPids) { showUnknown = false }
+                    }
+                }
+                if (showPin) PinDialog(onCancel = { showPin = false }, onOk = { showPin = false; showUnknown = true })
                 if (!car) VinPrompt(obd, profile)
                 ParkedTestBadge(
                     parked,

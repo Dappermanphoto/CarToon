@@ -196,6 +196,7 @@ fun DtcHubScreen(obd: ObdManager, metric: Boolean = false) {
                 }
                 if (ff == null) item { Hint(obd.freezeNote.orEmpty()) } else item {
                     InfoCard {
+                        Column(Modifier.fillMaxWidth()) {
                         ff.forEach { (key, v) ->
                             val pid = ObdPids[key] ?: return@forEach
                             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
@@ -205,6 +206,7 @@ fun DtcHubScreen(obd: ObdManager, metric: Boolean = false) {
                                     fontSize = ui.body, fontWeight = FontWeight.Bold,
                                 )
                             }
+                        }
                         }
                     }
                 }

@@ -20,7 +20,7 @@ class S10Simulator {
     /** The VIN a demo truck reports. */
     val vin = "1GCCS14W018123456"
 
-    private val mode1 = setOf(0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x14, 0x15, 0x20, 0x40, 0x42)
+    private val mode1 = setOf(0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x14, 0x15, 0x1F, 0x20, 0x31, 0x40, 0x42)
     private val gm = setOf(
         "1940", "11A6", "1201", "1202", "1203", "1204", "1205", "1206", "11F8", "11F9", "11FA", "11FB", "11FC", "11FD",
         "12C5", "1141", "1142", "199A", "1991", "1144",
@@ -119,6 +119,8 @@ class S10Simulator {
             0x0F -> hex(32 + 40)
             0x11 -> hex((throttle(s) * 255f / 100f).roundToInt())
             0x14, 0x15 -> hex((90f + 70f * sin(t() * 4f)).roundToInt(), 1) + " FF"
+            0x1F -> hex(412, 2)
+            0x31 -> hex(1234, 2)
             0x20 -> maskFor(0x20)
             0x40 -> maskFor(0x40)
             0x42 -> hex(((14.0f + 0.1f * sin(t() * 0.3f)) * 1000f).roundToInt(), 2)

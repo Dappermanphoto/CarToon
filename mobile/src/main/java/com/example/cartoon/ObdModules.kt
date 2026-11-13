@@ -24,6 +24,7 @@ class ObdModules(context: Context, val obd: ObdManager) {
     val thresholds = ThresholdMonitor(context, obd, ThresholdStore(context), scheduler)
     val fuel = FuelMonitor(context, obd)
     val perf = PerfTimer(obd, scheduler)
+    val unknownPids = UnknownPidLog(context, obd)
 
     init {
         scheduler.start(scope)
@@ -35,6 +36,7 @@ class ObdModules(context: Context, val obd: ObdManager) {
         thresholds.start(scope)
         fuel.start(scope)
         perf.start(scope)
+        unknownPids.start(scope)
     }
 
     fun stop() {
