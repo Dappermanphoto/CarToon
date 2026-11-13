@@ -10,3 +10,6 @@
 #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
 #   public *;
 #}
+# v1.9: R8 broke startup ("kotlin.collections.j extended by bk is inaccessible").
+-keep class kotlin.collections.** { *; }
+-keep class kotlin.jvm.internal.** { *; }
